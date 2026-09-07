@@ -8,7 +8,7 @@ can be overridden wholesale in tests.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import PostgresDsn, RedisDsn
+from pydantic import PostgresDsn, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -80,6 +80,20 @@ class Settings(BaseSettings):
     ocr_text_threshold_chars: int = 80
     chunk_target_tokens: int = 700
     chunk_overlap_tokens: int = 100
+
+    @field_validator("redis_url", "celery_broker_url", "celery_result_backend", mode="before")
+    @classmethod
+    def _empty_string_means_unset(cls, value: object) -> object:
+        """Treat a blank value in .env as absent.
+
+        Commenting a line out is awkward in a file people copy and edit, so the
+        documented way to disable the broker is to leave the value empty.
+        Pydantic would otherwise reject "" as a malformed URL rather than
+        reading it as "not configured".
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:
