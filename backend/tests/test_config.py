@@ -17,9 +17,7 @@ BASE = {
 
 
 def test_blank_broker_disables_celery() -> None:
-    settings = Settings(
-        **BASE, redis_url="", celery_broker_url="", celery_result_backend=""
-    )
+    settings = Settings(**BASE, redis_url="", celery_broker_url="", celery_result_backend="")
 
     assert settings.redis_url is None
     assert settings.celery_broker_url is None
