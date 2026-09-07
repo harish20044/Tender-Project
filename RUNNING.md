@@ -10,7 +10,10 @@ so route B exists and is fully supported.
 
 ## A. With Docker
 
-Everything runs in containers, matching production.
+Everything runs in containers, matching production. This is the normal way to
+run the project.
+
+First time only:
 
 ```bash
 cp .env.example .env
@@ -21,10 +24,13 @@ Add your two keys to `.env`:
 - `GROQ_API_KEY` from https://console.groq.com/keys
 - `JINA_API_KEY` from https://jina.ai/embeddings
 
+Then, every time:
+
 ```bash
-docker compose up --build
-docker compose exec api alembic upgrade head
+docker compose up -d --build
 ```
+
+Open http://localhost:5173.
 
 | Service | URL |
 |---|---|
@@ -32,6 +38,45 @@ docker compose exec api alembic upgrade head
 | API docs | http://localhost:8000/docs |
 | MinIO console | http://localhost:9001 |
 | Keycloak | http://localhost:8080 |
+
+### Getting tender data
+
+The dashboard reads tender notices scraped from the public procurement
+portal. Nothing appears until a scrape has run:
+
+```bash
+docker compose exec api python scripts/scrape_tenders.py --pages 12
+```
+
+Run it again whenever you want fresher notices; the portal listing turns over
+through the day. Results are written to `data/cache/`, which is mounted from
+the host, so a scrape run inside or outside the container is visible to both.
+
+### Everyday commands
+
+```bash
+docker compose logs -f api          # follow one service
+docker compose ps                   # what is running
+docker compose restart api          # after a config change
+docker compose down                 # stop, keep data
+docker compose down -v              # stop and wipe the databases
+```
+
+Application code is bind-mounted, so editing a file under `backend/` or
+`frontend/` reloads automatically. Rebuild only when dependencies change:
+
+```bash
+docker compose up -d --build
+```
+
+### Migrations
+
+There are no migrations yet, so this currently does nothing. It is the command
+once the schema lands:
+
+```bash
+docker compose exec api alembic upgrade head
+```
 
 ---
 

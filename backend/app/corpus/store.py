@@ -17,19 +17,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.corpus.cppp import ScrapedTender
 
 logger = get_logger(__name__)
 
-# Anchored to the repository rather than the working directory, so the scraper
-# and the API agree on the location no matter where each was launched from.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_PATH = _REPO_ROOT / "data" / "cache" / "tenders.json"
-
 
 def _resolve(path: Path | str | None) -> Path:
-    return Path(path) if path else DEFAULT_PATH
+    """Where the cache lives.
+
+    Taken from settings rather than the working directory, so the scraper and
+    the API agree no matter where each was launched from — and so Compose can
+    point both at a mounted volume, where the repository layout the default
+    infers from does not exist.
+    """
+    if path:
+        return Path(path)
+    return get_settings().data_path / "cache" / "tenders.json"
 
 
 def save(tenders: list[ScrapedTender], path: Path | str | None = None) -> Path:

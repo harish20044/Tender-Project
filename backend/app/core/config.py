@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     keycloak_client_id: str = "tender-api"
     keycloak_client_secret: str = ""
 
+    # --- Data ---------------------------------------------------------------
+    # Where scraped listings are cached. Set explicitly in Compose, because the
+    # repository layout the default infers from does not exist inside the
+    # container, where the backend is mounted at the filesystem root.
+    data_dir: str = ""
+
     # --- Pipeline ----------------------------------------------------------
     max_document_pages: int = 1200
     ocr_languages: str = "eng"
@@ -104,6 +110,11 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @property
+    def data_path(self) -> Path:
+        """Resolved data directory, falling back to the repository's own."""
+        return Path(self.data_dir) if self.data_dir else _REPO_ROOT / "data"
 
     @property
     def cors_origin_list(self) -> list[str]:

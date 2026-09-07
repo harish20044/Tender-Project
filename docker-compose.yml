@@ -80,6 +80,10 @@ services:
     env_file: .env
     ports:
       - "8000:8000"
+    environment:
+      # The repository layout the default infers from does not exist here, so
+      # the data directory is named explicitly and mounted below.
+      DATA_DIR: /app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,6 +93,9 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      # Scraped listings, shared with the host so a scrape run either side is
+      # visible to the other.
+      - ./data:/app/data
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
@@ -102,6 +109,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     env_file: .env
+    environment:
+      DATA_DIR: /app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,6 +118,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - ./data:/app/data
     # Ingestion is IO- and CPU-bound with long tasks, so prefork with a small
     # concurrency beats a high thread count here.
     command: celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=2
@@ -118,6 +128,13 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     env_file: .env
+    environment:
+      # Inside the network the API is another container, so localhost would
+      # resolve to this one.
+      VITE_PROXY_TARGET: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
       - "5173:5173"
     volumes:
