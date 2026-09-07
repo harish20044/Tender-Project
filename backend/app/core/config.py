@@ -6,15 +6,22 @@ can be overridden wholesale in tests.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import PostgresDsn, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Anchored to this file rather than the working directory. The API is started
+# from backend/, scripts run from the repo root, and tests run from either, so
+# a bare ".env" resolves differently depending on who launched the process.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENV_FILES = (_REPO_ROOT / ".env", _REPO_ROOT / "backend" / ".env")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -26,7 +33,10 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     # --- Database ----------------------------------------------------------
-    database_url: PostgresDsn
+    # Optional so the API can serve the tender listing, which reads a scraped
+    # file, on a machine with no database. Code that needs it raises a clear
+    # error rather than the app refusing to start at all.
+    database_url: PostgresDsn | None = None
 
     # --- Redis -------------------------------------------------------------
     # Optional, because a machine that cannot run Docker cannot run Redis

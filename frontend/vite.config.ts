@@ -13,6 +13,14 @@ export default defineConfig({
     port: 5173,
     // Required for the dev server to be reachable from outside the container.
     host: true,
+    // Same-origin in development, so no CORS negotiation and no API base URL
+    // to configure before the dashboard will load.
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
     watch: {
       // Bind mounts on Windows and macOS do not deliver inotify events.
       usePolling: true,

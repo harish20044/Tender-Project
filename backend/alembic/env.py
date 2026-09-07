@@ -21,7 +21,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", str(get_settings().database_url))
+_database_url = get_settings().database_url
+if _database_url is None:
+    raise SystemExit(
+        "DATABASE_URL is not set, so there is nothing to migrate. "
+        "See RUNNING.md for setting up a database."
+    )
+
+config.set_main_option("sqlalchemy.url", str(_database_url))
 
 target_metadata = Base.metadata
 

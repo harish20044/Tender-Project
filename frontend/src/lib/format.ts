@@ -28,6 +28,16 @@ export function formatDate(iso: string): string {
   });
 }
 
+/** Used for the "last read" line, where the time of day matters. */
+export function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export interface Countdown {
   days: number;
   label: string;

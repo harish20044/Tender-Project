@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes import tenders
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 
@@ -56,6 +57,8 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    app.include_router(tenders.router)
 
     return app
 

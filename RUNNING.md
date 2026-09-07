@@ -48,9 +48,21 @@ The three services Docker would have provided are replaced as follows.
 | Redis | Nothing | With no broker configured, Celery runs tasks inline |
 | MinIO | Local filesystem | Same storage interface, different backend |
 
-### 1. Frontend
+### 1. The dashboard, end to end
 
-This part needs no database and runs immediately.
+The dashboard needs no database. It reads tender notices scraped from the
+public procurement portal.
+
+Fetch the data, then start both processes:
+
+```bash
+cd backend
+pip install -e ".[dev]"
+python scripts/scrape_tenders.py --pages 12
+python -m uvicorn app.main:app --reload
+```
+
+In a second terminal:
 
 ```bash
 cd frontend
@@ -58,7 +70,15 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173. The dev server proxies `/api` to the backend, so
+there is no base URL to configure.
+
+Re-run the scrape whenever you want fresher notices. The portal listing turns
+over through the day.
+
+```bash
+python scripts/scrape_tenders.py --pages 20 --construction-only
+```
 
 ### 2. Database
 

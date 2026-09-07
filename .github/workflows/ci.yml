@@ -58,11 +58,11 @@ jobs:
 
       - name: Lint
         working-directory: backend
-        run: ruff check app tests
+        run: ruff check app tests scripts
 
       - name: Format check
         working-directory: backend
-        run: ruff format --check app tests
+        run: ruff format --check app tests scripts
 
       - name: Type check
         working-directory: backend

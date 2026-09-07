@@ -13,6 +13,14 @@ from app.core.config import get_settings
 @lru_cache
 def get_engine() -> Engine:
     settings = get_settings()
+
+    if settings.database_url is None:
+        raise RuntimeError(
+            "DATABASE_URL is not set. The database is optional only for the "
+            "scraped tender listing; anything else needs it configured. See "
+            "RUNNING.md for a hosted Postgres that takes a few minutes to set up."
+        )
+
     return create_engine(
         str(settings.database_url),
         # Ingestion workers hold connections for the length of a long task, so
