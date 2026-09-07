@@ -8,7 +8,7 @@ can be overridden wholesale in tests.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic import PostgresDsn, RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -102,4 +102,11 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Cached so the environment is read once per process.
+
+    The ignore is for Pylance/Pyright, which cannot see that pydantic-settings
+    fills required fields from the environment and so reports every one of them
+    as a missing argument. Mypy's pydantic plugin does understand this, which is
+    why warn_unused_ignores is disabled for the project.
+    """
     return Settings()  # type: ignore[call-arg]

@@ -39,8 +39,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Tender Intelligence API",
         description=(
-            "Analysis of construction tender documents and auditable "
-            "Bid / No-Bid recommendations."
+            "Analysis of construction tender documents and auditable Bid / No-Bid recommendations."
         ),
         version="0.1.0",
         lifespan=lifespan,

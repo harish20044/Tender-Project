@@ -36,6 +36,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -56,7 +57,7 @@ def _uuid_pk() -> Mapped[uuid.UUID]:
 # --------------------------------------------------------------------------- #
 
 
-class IngestStatus(str, enum.Enum):
+class IngestStatus(enum.StrEnum):
     PENDING = "pending"
     PARSING = "parsing"
     OCR = "ocr"
@@ -67,7 +68,7 @@ class IngestStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class DocumentKind(str, enum.Enum):
+class DocumentKind(enum.StrEnum):
     """The parts of a tender pack, which are parsed and weighted differently."""
 
     NIT = "nit"  # Notice Inviting Tender
@@ -78,20 +79,20 @@ class DocumentKind(str, enum.Enum):
     OTHER = "other"
 
 
-class Recommendation(str, enum.Enum):
+class Recommendation(enum.StrEnum):
     BID = "bid"
     NO_BID = "no_bid"
     REVIEW = "review"  # Gates passed but confidence too low to assert either way
 
 
-class Severity(str, enum.Enum):
+class Severity(enum.StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
 
-class GateOutcome(str, enum.Enum):
+class GateOutcome(enum.StrEnum):
     PASS = "pass"
     FAIL = "fail"
     UNKNOWN = "unknown"  # The document did not yield the value; never treated as a pass
@@ -260,9 +261,13 @@ class Chunk(Base):
         Index("ix_chunks_content_hash", "content_hash"),
         # Lexical half of hybrid retrieval. Tender queries are full of exact
         # terms — clause numbers, statutory names — that dense vectors blur.
+        #
+        # Written as raw SQL because passing the column name as a string to
+        # func.to_tsvector would index the literal word "content" rather than
+        # each row's text, producing an index that silently matches nothing.
         Index(
             "ix_chunks_content_fts",
-            func.to_tsvector("english", "content"),
+            text("to_tsvector('english', content)"),
             postgresql_using="gin",
         ),
         # Dense half. Lists are built once per document and read constantly,
@@ -328,11 +333,11 @@ class ExtractedFact(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "document_version_id", "key", name="uq_extracted_facts_version_key"
-        ),
+        UniqueConstraint("document_version_id", "key", name="uq_extracted_facts_version_key"),
         Index("ix_extracted_facts_tender_id", "tender_id"),
-        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_extracted_facts_confidence"),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1", name="ck_extracted_facts_confidence"
+        ),
     )
 
 
@@ -366,9 +371,7 @@ class FaqAnswer(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (
-        UniqueConstraint("tender_id", "faq_key", name="uq_faq_answers_tender_key"),
-    )
+    __table_args__ = (UniqueConstraint("tender_id", "faq_key", name="uq_faq_answers_tender_key"),)
 
 
 # --------------------------------------------------------------------------- #

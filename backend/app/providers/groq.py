@@ -34,7 +34,7 @@ from app.providers.base import (
     ChatMessage,
     Completion,
     ProviderError,
-    ProviderRateLimited,
+    ProviderRateLimitError,
 )
 from app.providers.throttle import SlidingWindowLimiter, estimate_tokens
 
@@ -57,9 +57,7 @@ class GroqChatProvider:
 
         self._api_key = api_key if api_key is not None else settings.groq_api_key
         if not self._api_key:
-            raise ProviderError(
-                "GROQ_API_KEY is not set. Generation cannot run without it."
-            )
+            raise ProviderError("GROQ_API_KEY is not set. Generation cannot run without it.")
 
         self._default_model = settings.groq_model_primary
         self._fast_model = settings.groq_model_fast
@@ -134,7 +132,7 @@ class GroqChatProvider:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._max_retries),
             wait=wait_exponential(multiplier=1, min=1, max=30),
-            retry=retry_if_exception_type((ProviderRateLimited, httpx.TransportError)),
+            retry=retry_if_exception_type((ProviderRateLimitError, httpx.TransportError)),
             reraise=True,
         ):
             with attempt:
@@ -145,15 +143,13 @@ class GroqChatProvider:
                     logger.warning(
                         "groq_rate_limited", model=model, retry_after_seconds=retry_after
                     )
-                    raise ProviderRateLimited(
+                    raise ProviderRateLimitError(
                         "Groq rate limit reached", retry_after_seconds=retry_after
                     )
 
                 if response.status_code >= 500:
                     # Transient upstream failure; worth another attempt.
-                    raise httpx.TransportError(
-                        f"Groq returned {response.status_code}"
-                    )
+                    raise httpx.TransportError(f"Groq returned {response.status_code}")
 
                 if response.status_code >= 400:
                     raise ProviderError(

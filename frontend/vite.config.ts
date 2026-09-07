@@ -1,11 +1,13 @@
 import react from "@vitejs/plugin-react";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./src") },
+    // Resolved from import.meta.url rather than __dirname, which does not
+    // exist in an ES module and only works here by Vite's bundling.
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   server: {
     port: 5173,

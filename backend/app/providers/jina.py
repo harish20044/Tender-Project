@@ -30,7 +30,7 @@ from tenacity import (
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.providers.base import ProviderError, ProviderRateLimited, RerankResult
+from app.providers.base import ProviderError, ProviderRateLimitError, RerankResult
 
 logger = get_logger(__name__)
 
@@ -50,9 +50,7 @@ class JinaProvider:
 
         self._api_key = api_key if api_key is not None else settings.jina_api_key
         if not self._api_key:
-            raise ProviderError(
-                "JINA_API_KEY is not set. Retrieval cannot run without it."
-            )
+            raise ProviderError("JINA_API_KEY is not set. Retrieval cannot run without it.")
 
         self._embed_model = settings.jina_embed_model
         self._rerank_model = settings.jina_rerank_model
@@ -143,7 +141,7 @@ class JinaProvider:
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(4),
             wait=wait_exponential(multiplier=1, min=1, max=20),
-            retry=retry_if_exception_type((ProviderRateLimited, httpx.TransportError)),
+            retry=retry_if_exception_type((ProviderRateLimitError, httpx.TransportError)),
             reraise=True,
         ):
             with attempt:
@@ -151,7 +149,7 @@ class JinaProvider:
 
                 if response.status_code == 429:
                     logger.warning("jina_rate_limited", path=path)
-                    raise ProviderRateLimited("Jina rate limit reached")
+                    raise ProviderRateLimitError("Jina rate limit reached")
 
                 if response.status_code >= 500:
                     raise httpx.TransportError(f"Jina returned {response.status_code}")

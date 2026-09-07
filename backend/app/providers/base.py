@@ -116,7 +116,7 @@ class ProviderError(RuntimeError):
     """Raised when a provider fails in a way retrying will not fix."""
 
 
-class ProviderRateLimited(RuntimeError):
+class ProviderRateLimitError(RuntimeError):
     """Raised when a provider refuses the call for rate reasons.
 
     Separate from ProviderError because the caller should back off and retry

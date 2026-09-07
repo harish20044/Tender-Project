@@ -90,6 +90,9 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
+# The IDE runs Pyright, which lacks the pydantic plugin and needs ignores that
+# mypy then reports as unused. Two checkers, one codebase; this is the seam.
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
