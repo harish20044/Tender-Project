@@ -63,6 +63,7 @@ class GroqChatProvider:
 
         self._default_model = settings.groq_model_primary
         self._fast_model = settings.groq_model_fast
+        self._default_reasoning_effort = settings.groq_reasoning_effort
         self._max_retries = settings.groq_max_retries
 
         self._client = client or httpx.AsyncClient(
@@ -92,6 +93,7 @@ class GroqChatProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         json_schema: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion:
         chosen_model = model or self._default_model
 
@@ -101,6 +103,7 @@ class GroqChatProvider:
             # Extraction must be reproducible. Callers that want variation ask
             # for it explicitly.
             "temperature": temperature,
+            "reasoning_effort": reasoning_effort or self._default_reasoning_effort,
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
@@ -113,6 +116,11 @@ class GroqChatProvider:
         prompt_estimate = sum(estimate_tokens(m.content) for m in messages)
         # Reserve the output allowance too, since it counts against the same
         # ceiling and is charged whether or not it is used.
+        #
+        # On a reasoning model, max_tokens caps reasoning and answer together,
+        # and reasoning is emitted first. Set it too low and the call returns
+        # an empty string having spent the whole budget thinking, so callers
+        # must leave real headroom above the size of the answer they expect.
         reservation = prompt_estimate + (max_tokens or 1024)
 
         await self._limiter.acquire(reservation)

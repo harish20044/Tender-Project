@@ -29,6 +29,7 @@ class FakeChatProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         json_schema: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion:
         self.calls.append(
             {
@@ -37,6 +38,7 @@ class FakeChatProvider:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "json_schema": json_schema,
+                "reasoning_effort": reasoning_effort,
             }
         )
 

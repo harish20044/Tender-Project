@@ -31,7 +31,7 @@ Every extracted fact carries the page and bounding box it came from, so any numb
 | Embeddings | Jina `jina-embeddings-v3` | Hosted; no GPU available in this deployment |
 | Reranking | Jina `jina-reranker-v2-base-multilingual` | Cross-encoder reranking is the single largest retrieval quality gain |
 | Vector store | pgvector inside PostgreSQL | One database, real metadata filtering, transactional with the facts table |
-| Generation | Groq, Llama 3.3 70B | Fast enough to fan out all 50 FAQs per document in parallel at ingest |
+| Generation | Groq, GPT-OSS 120B | Fast enough to fan out all 50 FAQs per document in parallel at ingest |
 | Orchestration | LangGraph | Explicit state machine with checkpointing for the decision agent |
 | Queue | Celery + Redis | A 500-page tender cannot be parsed inside an HTTP request |
 | Object storage | MinIO (S3 API) | Source PDFs |
@@ -87,6 +87,22 @@ Both providers are metered, and a single large tender is a meaningful token spen
 - All Groq traffic passes through one throttled, retrying client. Set `GROQ_MAX_RPM` and `GROQ_MAX_TPM` in `.env` below your account's real limits.
 
 Model calls happen in workers, never in a request handler.
+
+The generation models reason before answering, and reasoning is billed as
+output. `GROQ_REASONING_EFFORT` is the lever: on extraction, `low` reaches the
+same answer as `high` for roughly a quarter of the reasoning tokens. Raise it
+for decision narration, where the argument is harder than the arithmetic.
+
+One trap worth knowing. On a reasoning model `max_tokens` caps reasoning and
+answer together, and reasoning comes first. Set it too low and the call
+returns an empty string having spent its whole budget thinking.
+
+Groq's catalogue changes. Confirm what your key can reach rather than assuming
+a model is still served:
+
+```bash
+curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
+```
 
 ---
 

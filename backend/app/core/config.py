@@ -42,8 +42,14 @@ class Settings(BaseSettings):
 
     # --- Groq --------------------------------------------------------------
     groq_api_key: str = ""
-    groq_model_primary: str = "llama-3.3-70b-versatile"
-    groq_model_fast: str = "llama-3.1-8b-instant"
+    # Verified against the live account. Groq's catalogue changes, so confirm
+    # with GET /openai/v1/models rather than assuming a model is still served.
+    groq_model_primary: str = "openai/gpt-oss-120b"
+    groq_model_fast: str = "openai/gpt-oss-20b"
+    # Both gpt-oss models reason before answering and bill those tokens as
+    # completion. "low" reaches the same answer as "high" on extraction at
+    # roughly a quarter of the reasoning cost.
+    groq_reasoning_effort: Literal["low", "medium", "high"] = "low"
     groq_max_rpm: int = 25
     groq_max_tpm: int = 6000
     groq_max_retries: int = 5

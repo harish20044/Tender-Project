@@ -75,12 +75,17 @@ class ChatProvider(Protocol):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         json_schema: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion:
         """Generate a completion.
 
         When ``json_schema`` is given the provider must constrain output to it.
         Extraction depends on this: a malformed object means a re-run and a
         second charge for the same document.
+
+        ``reasoning_effort`` is honoured by providers whose models reason
+        before answering, and ignored by those that do not. It is the main
+        cost lever on such models, since reasoning is billed as output.
         """
         ...
 
