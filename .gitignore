@@ -1,0 +1,54 @@
+# Environment
+.env
+.env.local
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Data — never commit tender documents or corpora
+data/seed/*
+!data/seed/.gitkeep
+data/golden/*
+!data/golden/.gitkeep
+!data/golden/README.md
+*.pdf
+!docs/**/*.pdf
+
+# Storage volumes
+minio-data/
+postgres-data/
+redis-data/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Source deck (kept locally, not in repo history)
+*.pptx

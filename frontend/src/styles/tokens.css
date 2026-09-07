@@ -1,0 +1,62 @@
+/* ---------------------------------------------------------------------------
+   Design tokens.
+
+   The visual language borrows from construction drawing sheets: a cool
+   drafting-paper ground, hairline rules, condensed industrial lettering for
+   labels, and tabular figures wherever money or quantities line up.
+
+   Light theme only, by decision. Every colour is declared explicitly so the
+   interface holds regardless of the viewer's system setting.
+
+   Risk severity uses its own scale, deliberately separate from the accent, so
+   a highlighted control is never mistaken for a warning.
+--------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+
+  /* Ground and surface — cool, slightly blue, not a neutral grey */
+  --ground: #eef1f4;
+  --surface: #fbfcfd;
+  --surface-sunken: #e6eaee;
+  --rule: #cdd6de;
+  --rule-strong: #a9b6c2;
+
+  /* Ink */
+  --ink: #111a24;
+  --ink-muted: #5a6875;
+  --ink-faint: #8695a3;
+
+  /* Accent — drafting blue */
+  --accent: #14496f;
+  --accent-hover: #1a5c8b;
+  --accent-soft: #dce8f2;
+  --on-accent: #ffffff;
+
+  /* Risk severity — independent of the accent */
+  --sev-critical: #9e3315;
+  --sev-critical-soft: #f7e2db;
+  --sev-high: #b4441f;
+  --sev-high-soft: #fae7df;
+  --sev-medium: #8a6210;
+  --sev-medium-soft: #f7edd6;
+  --sev-low: #2e6b4f;
+  --sev-low-soft: #dcece4;
+
+  /* Spacing rhythm */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+
+  --radius: 3px;
+  --radius-lg: 5px;
+
+  /* Type */
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+}
