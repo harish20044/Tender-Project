@@ -25,20 +25,9 @@ dependencies = [
   # Object storage
   "boto3>=1.35",
 
-  # Document processing
-  "docling>=2.14",
-  "pdfplumber>=0.11",
-  "pymupdf>=1.24",
-  "pytesseract>=0.3.13",
-  "pillow>=11.0",
-  "openpyxl>=3.1",
-
   # Model providers (HTTP only; nothing runs locally)
   "httpx>=0.28",
   "tenacity>=9.0",
-
-  # Decision agent
-  "langgraph>=0.2.50",
 
   # Similarity
   "datasketch>=1.6",
@@ -53,6 +42,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Document parsing is a separate extra because Docling pulls PyTorch, which is
+# a large download and lags new Python releases. The API, database and provider
+# layers install and run without it, so the project stays workable on a machine
+# where the parsing stack will not resolve.
+parsing = [
+  "docling>=2.14",
+  "pdfplumber>=0.11",
+  "pymupdf>=1.24",
+  "pytesseract>=0.3.13",
+  "pillow>=11.0",
+  "openpyxl>=3.1",
+]
+
+# The decision agent's orchestration layer.
+agent = [
+  "langgraph>=0.2.50",
+]
+
 dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.24",

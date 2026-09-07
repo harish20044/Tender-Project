@@ -29,15 +29,21 @@ class Settings(BaseSettings):
     database_url: PostgresDsn
 
     # --- Redis -------------------------------------------------------------
-    redis_url: RedisDsn
-    celery_broker_url: RedisDsn
-    celery_result_backend: RedisDsn
+    # Optional, because a machine that cannot run Docker cannot run Redis
+    # either. With no broker configured, Celery runs tasks eagerly in-process.
+    redis_url: RedisDsn | None = None
+    celery_broker_url: RedisDsn | None = None
+    celery_result_backend: RedisDsn | None = None
 
     # --- Object storage ----------------------------------------------------
-    s3_endpoint_url: str
-    s3_access_key: str
-    s3_secret_key: str
-    s3_bucket: str
+    # "filesystem" is the development fallback where MinIO is unavailable.
+    storage_backend: Literal["s3", "filesystem"] = "s3"
+    storage_path: str = "./var/documents"
+
+    s3_endpoint_url: str = ""
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_bucket: str = "tender-documents"
     s3_region: str = "us-east-1"
 
     # --- Groq --------------------------------------------------------------
@@ -83,6 +89,15 @@ class Settings(BaseSettings):
     def providers_configured(self) -> bool:
         """False in CI and unit tests, where fake providers are injected instead."""
         return bool(self.groq_api_key and self.jina_api_key)
+
+    @property
+    def celery_eager(self) -> bool:
+        """Run tasks inline when there is no broker to hand them to.
+
+        Ingestion then blocks the caller, which is wrong for production but
+        makes the pipeline developable and debuggable without Redis.
+        """
+        return self.celery_broker_url is None
 
 
 @lru_cache

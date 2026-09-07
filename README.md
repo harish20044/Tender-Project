@@ -45,7 +45,13 @@ The AI layer is entirely hosted, so tender text leaves the machine. That is a de
 
 ## Getting started
 
-Requires Docker and Docker Compose.
+Full instructions, including how to run without Docker, are in
+[RUNNING.md](RUNNING.md). The short version follows.
+
+Requires Docker and Docker Compose. Docker Desktop on Windows needs WSL2,
+which needs administrator rights; if that route is closed, use route B in
+RUNNING.md, which replaces Postgres with a hosted database, drops Redis, and
+stores documents on the local filesystem.
 
 ```bash
 cp .env.example .env

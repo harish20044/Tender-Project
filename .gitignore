@@ -26,6 +26,7 @@ dist/
 dist-ssr/
 .vite/
 *.local
+*.tsbuildinfo
 npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
@@ -43,6 +44,9 @@ data/golden/*
 minio-data/
 postgres-data/
 redis-data/
+
+# Filesystem storage backend (development without Docker)
+var/
 
 # Editor / OS
 .vscode/
