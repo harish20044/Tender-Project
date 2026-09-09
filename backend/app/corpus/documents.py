@@ -100,9 +100,7 @@ def tender_from_row(row: dict[str, Any]) -> ScrapedTender:
     row can carry keys the dataclass does not know, and rows scraped before a
     field was added lack it. Neither may crash the run.
     """
-    known = {
-        name: row[name] for name in ScrapedTender.__dataclass_fields__ if name in row
-    }
+    known = {name: row[name] for name in ScrapedTender.__dataclass_fields__ if name in row}
     return ScrapedTender(**known)  # type: ignore[arg-type]
 
 

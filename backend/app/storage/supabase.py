@@ -39,9 +39,7 @@ class SupabaseStorage:
         self._base = (base_url or settings.supabase_url).rstrip("/")
         self._key = service_key or settings.supabase_service_role_key
         self._bucket = bucket or settings.supabase_bucket
-        self._public = (
-            settings.supabase_public_bucket if public_bucket is None else public_bucket
-        )
+        self._public = settings.supabase_public_bucket if public_bucket is None else public_bucket
         self._client = client or httpx.Client(timeout=60.0)
         if not self._base or not self._key:
             raise StorageError(
