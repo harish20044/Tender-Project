@@ -1,0 +1,29 @@
+# Virtualenvs belong to the host and carry host-platform binaries.
+.venv
+.venv-*
+venv
+env
+
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage
+coverage.xml
+
+# Bind-mounted at runtime, not baked into the image.
+data
+var
+
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store

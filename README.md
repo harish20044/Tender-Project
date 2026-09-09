@@ -30,16 +30,18 @@ Every extracted fact carries the page and bounding box it came from, so any numb
 | OCR | Tesseract, auto-routed per page | Tenders from government portals are frequently scanned images with no text layer |
 | Embeddings | Jina `jina-embeddings-v3` | Hosted; no GPU available in this deployment |
 | Reranking | Jina `jina-reranker-v2-base-multilingual` | Cross-encoder reranking is the single largest retrieval quality gain |
-| Vector store | pgvector inside PostgreSQL | One database, real metadata filtering, transactional with the facts table |
+| Vector store | pgvector, via Supabase | One database, real metadata filtering, transactional with the facts table |
 | Generation | Groq, GPT-OSS 120B | Fast enough to fan out all 50 FAQs per document in parallel at ingest |
 | Orchestration | LangGraph | Explicit state machine with checkpointing for the decision agent |
 | Queue | Celery + Redis | A 500-page tender cannot be parsed inside an HTTP request |
-| Object storage | MinIO (S3 API) | Source PDFs |
+| Object storage | Supabase Storage (S3-compatible) | Source PDFs |
 | API | FastAPI + Pydantic, Alembic | |
-| Auth | Keycloak | Roles: Analyst, Manager, Admin |
+| Auth | Supabase Auth | Roles (Analyst, Manager, Admin) live in each user's server-set app_metadata |
 | Frontend | React, TypeScript, Vite, Tailwind, pdf.js | |
 
 The AI layer is entirely hosted, so tender text leaves the machine. That is a deliberate trade-off given no local GPU. All model calls sit behind a provider interface, so a self-hosted mode can be added later without touching calling code.
+
+Database, storage and auth are hosted on Supabase rather than self-managed, since this project also runs on machines that cannot reliably run Docker at all (see [RUNNING.md](RUNNING.md)). Only the API, worker, Redis and frontend run in containers.
 
 ---
 
@@ -48,16 +50,17 @@ The AI layer is entirely hosted, so tender text leaves the machine. That is a de
 Full instructions, including how to run without Docker, are in
 [RUNNING.md](RUNNING.md). The short version follows.
 
-Requires Docker and Docker Compose. Docker Desktop on Windows needs WSL2,
-which needs administrator rights; if that route is closed, use route B in
-RUNNING.md, which replaces Postgres with a hosted database, drops Redis, and
-stores documents on the local filesystem.
+Requires a free [Supabase](https://supabase.com) project (database, storage
+and auth) and Docker for the rest. Docker Desktop on Windows needs WSL2, which
+needs administrator rights; if that route is closed, use route B in
+RUNNING.md, which drops Docker and Redis entirely and runs the API directly.
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in two keys in `.env`:
+Fill in `.env`: the five Supabase values from your project's dashboard (see
+RUNNING.md for exactly where each one lives), plus two provider keys:
 
 - `GROQ_API_KEY` from https://console.groq.com/keys
 - `JINA_API_KEY` from https://jina.ai/embeddings
@@ -72,8 +75,7 @@ docker compose up --build
 |---|---|
 | Frontend | http://localhost:5173 |
 | API docs | http://localhost:8000/docs |
-| MinIO console | http://localhost:9001 |
-| Keycloak | http://localhost:8080 |
+| Database / storage / auth | your Supabase project dashboard |
 
 Apply migrations on first run:
 
@@ -133,7 +135,6 @@ data/
   seed/           historical corpus (not committed)
   golden/         evaluation fixtures
 docs/             architecture and decision records
-infra/            Keycloak realm and related config
 ```
 
 ---

@@ -6,9 +6,9 @@ there is exactly one place where connection details are configured.
 
 from logging.config import fileConfig
 
-from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
+from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
 
@@ -28,14 +28,18 @@ if _database_url is None:
         "See RUNNING.md for setting up a database."
     )
 
-config.set_main_option("sqlalchemy.url", str(_database_url))
+# Not routed through config.set_main_option/get_main_option: that pipes the
+# URL through configparser, which treats a literal "%" — present in any
+# URL-encoded password, Supabase's included — as interpolation syntax and
+# raises. Kept as a plain string instead.
+_database_url_str = str(_database_url)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=_database_url_str,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -47,11 +51,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_engine(_database_url_str, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(

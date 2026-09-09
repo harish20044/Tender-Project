@@ -38,21 +38,26 @@ def _resolve(path: Path | str | None) -> Path:
 
 
 def save(tenders: list[ScrapedTender], path: Path | str | None = None) -> Path:
-    """Write the scrape result, replacing whatever was there.
-
-    Written to a temporary file in the same directory and then moved, so a
-    crash mid-write cannot leave the API reading half a JSON document.
-    """
+    """Write the scrape result, replacing whatever was there."""
     target = _resolve(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-
     payload = {
         "scraped_at": datetime.now(UTC).isoformat(),
         "source": "eprocure.gov.in/cppp",
         "count": len(tenders),
         "tenders": [tender.as_dict() for tender in tenders],
     }
+    _write(payload, target)
+    logger.info("tenders_saved", path=str(target), count=len(tenders))
+    return target
 
+
+def _write(payload: dict[str, Any], target: Path) -> None:
+    """Atomically replace the cache with ``payload``.
+
+    Written to a temporary file in the same directory and then moved, so a
+    crash mid-write cannot leave the API reading half a JSON document.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=target.parent, delete=False, suffix=".partial"
     ) as handle:
@@ -60,8 +65,38 @@ def save(tenders: list[ScrapedTender], path: Path | str | None = None) -> Path:
         temp_path = Path(handle.name)
 
     temp_path.replace(target)
-    logger.info("tenders_saved", path=str(target), count=len(tenders))
-    return target
+
+
+def update_tender_document(reference: str, *, document_key: str, document_url: str) -> bool:
+    """Record where a tender's downloaded pack ended up, on its own row.
+
+    The archive itself is object storage, not this file, but this file is what
+    the dashboard and the rest of the pipeline read, so the pointer lives
+    here. Matches on reference, which the scraper already treats as unique per
+    run. Returns False when no row matches — a stale cache, not an error.
+    """
+    data = load()
+    rows: list[dict[str, Any]] = list(data.get("tenders", []))
+
+    for row in rows:
+        if row.get("reference") == reference:
+            row["document_key"] = document_key
+            row["document_url"] = document_url
+            row["document_stored_at"] = datetime.now(UTC).isoformat()
+            _write(
+                {
+                    "scraped_at": data.get("scraped_at"),
+                    "source": data.get("source"),
+                    "count": len(rows),
+                    "tenders": rows,
+                },
+                _resolve(None),
+            )
+            logger.info("tender_document_recorded", reference=reference, key=document_key)
+            return True
+
+    logger.warning("tender_document_row_missing", reference=reference)
+    return False
 
 
 def load(path: Path | str | None = None) -> dict[str, Any]:

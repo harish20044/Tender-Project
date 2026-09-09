@@ -3,10 +3,10 @@
 Source PDFs live behind this interface rather than in the database, because
 they are large, immutable once uploaded, and served directly to the viewer.
 
-Two backends exist for one reason: MinIO needs Docker, and Docker needs WSL2,
-which is not available on every machine this has to run on. The filesystem
-backend keeps development possible there. Both satisfy the same protocol, so
-nothing above this layer knows which is in use.
+Two backends exist for one reason: the "s3" backend needs a configured
+Supabase Storage project, which is not always set up yet on a machine this
+runs on. The filesystem backend keeps development possible there. Both
+satisfy the same protocol, so nothing above this layer knows which is in use.
 """
 
 from __future__ import annotations

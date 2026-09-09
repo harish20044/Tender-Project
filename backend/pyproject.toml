@@ -55,6 +55,14 @@ parsing = [
   "openpyxl>=3.1",
 ]
 
+# The portal document downloader: a real Chrome driven by Selenium, and the
+# CAPTCHA read by Tesseract, which is a separate program (see RUNNING.md).
+scraper = [
+  "selenium>=4.27",
+  "pytesseract>=0.3.13",
+  "pillow>=11.0",
+]
+
 # The decision agent's orchestration layer.
 agent = [
   "langgraph>=0.2.50",

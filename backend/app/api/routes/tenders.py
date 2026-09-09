@@ -25,6 +25,11 @@ class Tender(BaseModel):
     is_construction: bool
     source_listing: str
     scraped_at: str
+    # Present once scripts/download_documents.py has archived this tender's
+    # pack; absent (None) beforehand. See app.corpus.store.update_tender_document.
+    document_key: str | None = None
+    document_url: str | None = None
+    document_stored_at: str | None = None
 
 
 class TenderList(BaseModel):

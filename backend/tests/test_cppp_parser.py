@@ -16,7 +16,8 @@ LISTING_HTML = """
     <th>Organisation Name</th><th>Corrigendum</th></tr>
 <tr><td>1.</td><td>07-Sep-2026 08:41 PM</td><td>21-Sep-2026 02:00 PM</td>
     <td>21-Sep-2026 02:01 PM</td>
-    <td>Construction of Major Bridge at Km 27/NH-48/2026_NHAI_1234_1/998877</td>
+    <td><a href="https://eprocure.gov.in/cppp/tendersfullview/MTQxMTcyOTk=">Construction of
+        Major Bridge at Km 27/NH-48/2026_NHAI_1234_1/998877</a></td>
     <td>National Highways Authority of India</td><td>2</td></tr>
 <tr><td>2.</td><td>06-Sep-2026 10:00 AM</td><td>20-Sep-2026 03:00 PM</td>
     <td>20-Sep-2026 03:30 PM</td>
@@ -62,6 +63,14 @@ def test_a_title_without_a_numeric_id_still_yields_a_reference() -> None:
 
     assert tender_id is None
     assert reference == "44A"
+
+
+def test_title_link_is_kept_as_the_detail_url() -> None:
+    rows = _parse_listing(LISTING_HTML, "high_value")
+
+    assert rows[0].detail_url == "https://eprocure.gov.in/cppp/tendersfullview/MTQxMTcyOTk="
+    # A row without a link keeps the field empty rather than raising.
+    assert rows[1].detail_url is None
 
 
 # --- classification -------------------------------------------------------

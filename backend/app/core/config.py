@@ -46,8 +46,12 @@ class Settings(BaseSettings):
     celery_result_backend: RedisDsn | None = None
 
     # --- Object storage ----------------------------------------------------
-    # "filesystem" is the development fallback where MinIO is unavailable.
-    storage_backend: Literal["s3", "filesystem"] = "s3"
+    # "supabase" talks to Supabase Storage's own REST API directly (the
+    # verified, working path). "s3" points at the same storage over its
+    # S3-compatible endpoint instead, for tooling that expects a plain S3
+    # client. "filesystem" is the offline development fallback where no
+    # Supabase project is configured at all.
+    storage_backend: Literal["s3", "filesystem", "supabase"] = "supabase"
     storage_path: str = "./var/documents"
 
     s3_endpoint_url: str = ""
@@ -55,6 +59,36 @@ class Settings(BaseSettings):
     s3_secret_key: str = ""
     s3_bucket: str = "tender-documents"
     s3_region: str = "us-east-1"
+
+    # --- Supabase (database, storage, auth) ---------------------------------
+    # One project backs all three. Storage runs over its REST interface, so
+    # the project URL and the service-role key are all that document archiving
+    # needs; the same two also authenticate DB-adjacent admin calls. Roles
+    # (admin/manager/estimator/viewer) live in each user's app_metadata, which
+    # only the service_role key can write — user_metadata is user-editable and
+    # is never used for authorization. The local `users` table (see
+    # app.db.models) mirrors auth.users by id so the rest of the schema can
+    # foreign-key to a Postgres row; app_metadata stays the source of truth
+    # for the role itself.
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    # Bypasses every access rule. Server-side use only, never sent to the
+    # frontend.
+    supabase_service_role_key: str = ""
+    supabase_jwt_secret: str = ""
+    supabase_bucket: str = "tender-documents"
+    # Public buckets serve stable URLs; private ones hand out signed URLs.
+    supabase_public_bucket: bool = True
+
+    # --- Portal document downloads ------------------------------------------
+    # The downloader drives a real Chrome and reads the portal's CAPTCHA with
+    # Tesseract, which is a separate program, not a Python package.
+    tesseract_cmd: str = ""
+    downloads_dir: str = ""
+    selenium_headless: bool = True
+    captcha_max_attempts: int = 8
+    # Politeness pause between tenders; the portal is public infrastructure.
+    download_settle_seconds: float = 3.0
 
     # --- Groq --------------------------------------------------------------
     groq_api_key: str = ""
@@ -77,12 +111,6 @@ class Settings(BaseSettings):
     jina_rerank_model: str = "jina-reranker-v2-base-multilingual"
     jina_embed_dimensions: int = 512
     jina_embed_batch_size: int = 64
-
-    # --- Keycloak ----------------------------------------------------------
-    keycloak_url: str = "http://keycloak:8080"
-    keycloak_realm: str = "tender"
-    keycloak_client_id: str = "tender-api"
-    keycloak_client_secret: str = ""
 
     # --- Data ---------------------------------------------------------------
     # Where scraped listings are cached. Set explicitly in Compose, because the
@@ -115,6 +143,11 @@ class Settings(BaseSettings):
     def data_path(self) -> Path:
         """Resolved data directory, falling back to the repository's own."""
         return Path(self.data_dir) if self.data_dir else _REPO_ROOT / "data"
+
+    @property
+    def downloads_path(self) -> Path:
+        """Where downloaded tender packs land before archiving."""
+        return Path(self.downloads_dir) if self.downloads_dir else self.data_path / "downloads"
 
     @property
     def cors_origin_list(self) -> list[str]:

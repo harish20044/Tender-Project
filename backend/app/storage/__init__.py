@@ -22,6 +22,11 @@ def get_storage() -> DocumentStorage:
 
         return FilesystemStorage(settings.storage_path)
 
+    if settings.storage_backend == "supabase":
+        from app.storage.supabase import SupabaseStorage
+
+        return SupabaseStorage()
+
     from app.storage.s3 import S3Storage
 
     return S3Storage()

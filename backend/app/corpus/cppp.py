@@ -171,6 +171,10 @@ class ScrapedTender:
     is_construction: bool
     source_listing: str
     scraped_at: str
+    # The title cell links to the tender's detail view. The href is a
+    # self-contained token with no session state in it, which is what lets the
+    # document downloader open the same tender in a browser later.
+    detail_url: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -211,6 +215,7 @@ def _fetch(url: str) -> str:
 _TAG = re.compile(r"<[^>]+>")
 _ROW = re.compile(r"<tr.*?</tr>", re.S | re.I)
 _CELL = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S | re.I)
+_ANCHOR = re.compile(r"<a[^>]+href=\"([^\"]+)\"", re.I)
 
 
 def _clean(fragment: str) -> str:
@@ -219,6 +224,22 @@ def _clean(fragment: str) -> str:
 
 def _row_cells(row_html: str) -> list[str]:
     return [_clean(cell) for cell in _CELL.findall(row_html)]
+
+
+def _detail_url(row_html: str) -> str | None:
+    """The detail-page link from a row's title cell, if it has one.
+
+    Data rows carry exactly one anchor, on the title; taking the anchor from
+    the title cell (the fifth) rather than the first in the row keeps the
+    extraction honest should the portal ever link something else.
+    """
+    cells = _CELL.findall(row_html)
+    if len(cells) < 5:
+        return None
+    match = _ANCHOR.search(cells[4])
+    if not match:
+        return None
+    return html.unescape(match.group(1)).strip() or None
 
 
 def _parse_datetime(value: str) -> str | None:
@@ -319,6 +340,7 @@ def _parse_listing(page_html: str, listing_name: str) -> list[ScrapedTender]:
                 is_construction=is_construction,
                 source_listing=listing_name,
                 scraped_at=scraped_at,
+                detail_url=_detail_url(row_html),
             )
         )
 

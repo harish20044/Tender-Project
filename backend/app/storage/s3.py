@@ -1,4 +1,4 @@
-"""S3-compatible document storage, used with MinIO locally and S3 in production."""
+"""S3-compatible document storage, backed by Supabase Storage."""
 
 from __future__ import annotations
 

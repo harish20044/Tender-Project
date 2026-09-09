@@ -1,9 +1,8 @@
-"""Filesystem-backed document storage, for development without Docker.
+"""Filesystem-backed document storage, for development with no Supabase project.
 
 Not intended for production: there are no expiring URLs, no replication, and
 files are served by the API process rather than by object storage. It exists
-so the pipeline can be developed and tested on a machine that cannot run
-MinIO.
+so the pipeline can be developed and tested before Supabase Storage is set up.
 """
 
 from __future__ import annotations

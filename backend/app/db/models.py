@@ -528,3 +528,164 @@ class HistoricalTender(Base):
             postgresql_ops={"scope_embedding": "vector_cosine_ops"},
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Users and activity
+# --------------------------------------------------------------------------- #
+
+
+class UserRole(enum.StrEnum):
+    ADMIN = "admin"
+    MANAGER = "manager"
+    ESTIMATOR = "estimator"
+    VIEWER = "viewer"
+
+
+class QuestionSource(enum.StrEnum):
+    PREDEFINED_FAQ = "predefined_faq"
+    FREE_SEARCH = "free_search"
+
+
+class ActivityAction(enum.StrEnum):
+    LOGIN = "login"
+    LOGOUT = "logout"
+    VIEW_TENDER = "view_tender"
+    ASK_QUESTION = "ask_question"
+    DOWNLOAD_DOCUMENT = "download_document"
+    VIEW_DECISION = "view_decision"
+    VIEW_FAQ = "view_faq"
+    SEARCH = "search"
+
+
+class User(Base):
+    """A person, mirrored from Supabase ``auth.users`` by id.
+
+    Supabase owns the credential and session; this row exists so the rest of
+    the schema has a Postgres id to foreign-key against, and so profile
+    fields the app cares about (role, department) have somewhere to live that
+    isn't ``auth.users``, whose shape the app does not control. ``role`` is a
+    read cache of ``auth.users.app_metadata.role`` — write it there first
+    (only the service_role key can), then sync it here; this column is never
+    the source of truth for authorization.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(256))
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="user_role"), default=UserRole.VIEWER, nullable=False
+    )
+    department: Mapped[str | None] = mapped_column(String(128))
+    phone: Mapped[str | None] = mapped_column(String(32))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("email", name="uq_users_email"),)
+
+
+class QuestionLog(Base):
+    """One question asked, whether from the 50 standard FAQs or free search.
+
+    Kept separate from ``user_activity_log`` so repeated questions can be
+    clustered: ``normalized_question`` is trigram-indexed, and the same
+    question recurring across many users is the signal that promotes it into
+    a new standard FAQ (see ``faq_answers``).
+    """
+
+    __tablename__ = "question_log"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tender_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tenders.id", ondelete="CASCADE")
+    )
+
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Lowercased, whitespace-collapsed form of the question, so near-duplicate
+    # phrasings ("what's the EMD?" / "What is the EMD amount") cluster
+    # together under trigram similarity instead of only exact repeats.
+    normalized_question: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[QuestionSource] = mapped_column(
+        Enum(QuestionSource, name="question_source"), nullable=False
+    )
+    matched_faq_key: Mapped[str | None] = mapped_column(String(128))
+    answer_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("faq_answers.id", ondelete="SET NULL")
+    )
+    was_answerable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer)
+    # Groups the questions of one browsing session, without needing a
+    # separate sessions table.
+    session_id: Mapped[str | None] = mapped_column(String(64))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_question_log_user_id", "user_id"),
+        Index("ix_question_log_tender_id", "tender_id"),
+        Index(
+            "ix_question_log_normalized_question_trgm",
+            "normalized_question",
+            postgresql_using="gin",
+            postgresql_ops={"normalized_question": "gin_trgm_ops"},
+        ),
+    )
+
+
+class UserActivityLog(Base):
+    """A generic per-user audit trail: who did what, and when.
+
+    Deliberately one wide table rather than one per action, since "this user
+    logged in at this time and did this" reads it as a single timeline;
+    ``extra`` carries whatever detail one action needs without a schema
+    change for the next one.
+    """
+
+    __tablename__ = "user_activity_log"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    action: Mapped[ActivityAction] = mapped_column(
+        Enum(ActivityAction, name="activity_action"), nullable=False
+    )
+
+    tender_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tenders.id", ondelete="CASCADE")
+    )
+    document_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="SET NULL")
+    )
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("decisions.id", ondelete="SET NULL")
+    )
+
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+    extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_user_activity_log_user_id_created_at", "user_id", "created_at"),
+        Index("ix_user_activity_log_action", "action"),
+    )

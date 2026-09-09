@@ -18,9 +18,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Test and lint tooling is useful in a development container and dead weight
+# in a deployed one, so it is opt-in. Compose leaves the default, which keeps
+# `docker compose exec api pytest` working.
+ARG INSTALL_DEV=true
+
 # Dependency layer stays cached while only application code changes.
 COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install -e ".[dev]"
+RUN pip install --upgrade pip \
+    && if [ "$INSTALL_DEV" = "true" ]; then \
+         pip install -e ".[dev]"; \
+       else \
+         pip install -e .; \
+       fi
 
 COPY . .
 

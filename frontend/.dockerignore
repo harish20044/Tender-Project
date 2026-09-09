@@ -1,0 +1,22 @@
+# Installed inside the image by `npm install`. Copying the host's copy in on
+# top adds ~270MB of duplicate layer and risks shipping binaries built for the
+# host's platform rather than the container's.
+node_modules
+dist
+dist-ssr
+.vite
+
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
