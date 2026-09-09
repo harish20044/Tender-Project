@@ -54,7 +54,12 @@ jobs:
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          # scraper (selenium/pytesseract/pillow) is needed just to import
+          # app.corpus.captcha and app.corpus.documents, which test_captcha.py
+          # and test_ingest.py exercise. The actual Chrome/Tesseract binaries
+          # are not installed here, so any test that needs them is skipped
+          # (see test_captcha.py's _tesseract_present() check).
+          pip install -e ".[dev,scraper]"
 
       - name: Lint
         working-directory: backend
