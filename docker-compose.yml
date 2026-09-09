@@ -55,8 +55,14 @@ services:
       - ./backend:/app
       - ./data:/app/data
     # Ingestion is IO- and CPU-bound with long tasks, so prefork with a small
-    # concurrency beats a high thread count here.
-    command: celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=2
+    # concurrency beats a high thread count here. -B runs the beat scheduler
+    # embedded in this same process (fine for one worker container; running
+    # more than one replica would double-schedule and needs a separate beat
+    # service instead). NOTE: this image has no Chrome and no `scraper` extra
+    # installed, so AUTO_DOWNLOAD_DOCUMENTS only actually works when the
+    # worker runs on the host (RUNNING.md's no-Docker route) — enabling it
+    # here would just fail every download task.
+    command: celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=2 -B
 
   frontend:
     build:

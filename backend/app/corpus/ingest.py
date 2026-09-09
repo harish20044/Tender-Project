@@ -19,17 +19,24 @@ from __future__ import annotations
 import mimetypes
 import re
 import zipfile
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import BytesIO
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.corpus import store
 from app.corpus.cppp import ScrapedTender
 from app.db import models
 from app.db.session import session_scope
 from app.storage import DocumentStorage, content_hash
+
+if TYPE_CHECKING:
+    from app.corpus.documents import DownloadResult, TenderDocumentDownloader
 
 logger = get_logger(__name__)
 
@@ -87,6 +94,13 @@ def _storage_key(tender_label: str, filename: str) -> str:
     safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", tender_label).strip("._") or "tender"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._") or "file"
     return f"cppp/{safe_label}/{safe_name}"
+
+
+def _archive_key(tender_label: str) -> str:
+    """Where the whole downloaded pack lives, distinct from the per-file keys
+    ``_storage_key`` produces: ``cppp/<label>.zip``."""
+    safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", tender_label).strip("._") or "tender"
+    return f"cppp/{safe_label}.zip"
 
 
 def _guess_content_type(filename: str) -> str:
@@ -221,3 +235,67 @@ async def archive_and_record(
 
     logger.info("tender_documents_recorded", reference=tender.reference, files=len(keys))
     return keys
+
+
+@dataclass(frozen=True)
+class ArchiveOutcome:
+    """One tender's full pipeline result: browser download, then archive."""
+
+    download: DownloadResult
+    archive_url: str | None = None
+    file_keys: list[str] = field(default_factory=list)
+
+
+async def archive_downloaded(
+    tender: ScrapedTender, downloader: TenderDocumentDownloader, *, storage: DocumentStorage
+) -> ArchiveOutcome:
+    """Drive ``downloader`` for one tender, then archive and record what it got.
+
+    Takes an already-open :class:`TenderDocumentDownloader` rather than
+    owning the browser itself, so a caller working through a batch (the CLI
+    script) can reuse one Chrome session across many tenders instead of
+    paying startup cost per tender. ``download_and_archive_one`` below is the
+    one-tender convenience wrapper for callers that do not have a batch.
+    """
+    result = downloader.download(tender)
+    if result.status != "downloaded" or result.zip_path is None:
+        return ArchiveOutcome(download=result)
+
+    label = tender.tender_id or tender.reference
+    data = result.zip_path.read_bytes()
+    key = _archive_key(label)
+    await storage.put(key, data, content_type="application/zip")
+    url = await storage.url_for(key)
+    store.update_tender_document(tender.reference, document_key=key, document_url=url)
+
+    file_keys = await archive_and_record(tender, data, storage=storage)
+    return ArchiveOutcome(download=result, archive_url=url, file_keys=file_keys)
+
+
+async def download_and_archive_one(
+    tender: ScrapedTender,
+    *,
+    storage: DocumentStorage,
+    download_dir: Path | str,
+    headless: bool = True,
+    max_captcha_attempts: int = 8,
+    debug_dir: Path | str | None = None,
+) -> ArchiveOutcome:
+    """The full pipeline for a single tender, owning its own browser session.
+
+    What the Celery task uses: each queued tender gets its own Chrome
+    instance, started and closed within one task, rather than sharing state
+    across queued jobs.
+
+    Selenium is imported here rather than at module level so the rest of this
+    module (the pure classify/extract helpers) stays importable without it.
+    """
+    from app.corpus.documents import TenderDocumentDownloader
+
+    with TenderDocumentDownloader(
+        download_dir,
+        headless=headless,
+        max_captcha_attempts=max_captcha_attempts,
+        debug_dir=debug_dir,
+    ) as downloader:
+        return await archive_downloaded(tender, downloader, storage=storage)

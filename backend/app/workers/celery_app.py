@@ -54,6 +54,14 @@ def create_celery() -> Celery:
         # A stuck parse should fail rather than occupy a worker forever.
         task_soft_time_limit=1800,
         task_time_limit=2100,
+        # Keeps the portal listing current independent of dashboard traffic,
+        # rather than a page view triggering a scrape — see app.workers.tasks.
+        beat_schedule={
+            "scrape-tenders": {
+                "task": "app.workers.scrape_tenders",
+                "schedule": settings.scrape_interval_seconds,
+            },
+        },
     )
 
     # Task modules are imported for their registration side effect. Kept in one

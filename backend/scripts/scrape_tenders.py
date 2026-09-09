@@ -2,7 +2,9 @@
 
     python scripts/scrape_tenders.py --pages 10 --listing high_value
 
-Run it again to refresh. The dashboard reads whatever this last wrote.
+Run it again to refresh. Upserts into the ``tenders`` table by reference
+number — nothing is deleted, so a tender that drops off the live listing
+stays visible with whatever it last read. The dashboard reads this table.
 """
 
 from __future__ import annotations
@@ -32,7 +34,6 @@ def main() -> int:
         action="store_true",
         help="Discard tenders that are not construction work.",
     )
-    parser.add_argument("--out", default=None, help="Override the output path.")
     args = parser.parse_args()
 
     configure_logging("INFO")
@@ -47,10 +48,12 @@ def main() -> int:
         print("No tenders scraped. The portal may be unreachable or its markup changed.")
         return 1
 
-    path = store.save(tenders, args.out)
+    result = store.save(tenders)
 
     construction = sum(1 for tender in tenders if tender.is_construction)
-    print(f"\nScraped {len(tenders)} tenders from {args.listing} -> {path}")
+    print(f"\nScraped {len(tenders)} tenders from {args.listing} -> tenders table")
+    print(f"  new               : {result['new']}")
+    print(f"  updated           : {result['updated']}")
     print(f"  construction work : {construction}")
     print(f"  other             : {len(tenders) - construction}")
 

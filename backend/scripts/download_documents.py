@@ -4,11 +4,11 @@
     python scripts/download_documents.py --reference 2026_NHAI_290394_1 --headed
     python scripts/download_documents.py --local-only      # keep ZIPs on disk
 
-Reads the last scrape (data/cache/tenders.json), opens each tender's detail
+Reads the last scrape (the ``tenders`` table), opens each tender's detail
 page in a real Chrome, answers the CAPTCHA gate by OCR, saves the ZIP under
-data/downloads/, uploads it to Supabase Storage, and records the URL on the
-tender's row in the cache — which is where the rest of the pipeline picks it
-up.
+data/downloads/, uploads it to Supabase Storage, and unzips it into
+Document/DocumentVersion rows — which is where the rest of the pipeline
+picks it up.
 
 Needs three things installed once (see RUNNING.md): the `scraper` extra, the
 Tesseract program, and a Chrome for the driver to control.
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import re
 import sys
 import time
 from pathlib import Path
@@ -29,12 +28,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.corpus import ingest, store
 from app.corpus.captcha import configure_tesseract, tesseract_available
-from app.corpus.cppp import ScrapedTender
-from app.corpus.documents import (
-    DownloadResult,
-    TenderDocumentDownloader,
-    tender_from_row,
-)
+from app.corpus.documents import TenderDocumentDownloader, tender_from_row
 from app.storage import DocumentStorage, StorageError, get_storage
 
 
@@ -107,13 +101,6 @@ def _select_rows(args: argparse.Namespace) -> list[dict[str, object]]:
     return rows[: max(0, args.limit)]
 
 
-def _storage_key(tender: ScrapedTender) -> str:
-    """Where the pack lives in the bucket: cppp/<tender id>.zip."""
-    label = tender.tender_id or tender.reference
-    label = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("._") or "tender"
-    return f"cppp/{label}.zip"
-
-
 def _build_uploader(args: argparse.Namespace) -> DocumentStorage | None:
     if args.local_only:
         return None
@@ -124,22 +111,6 @@ def _build_uploader(args: argparse.Namespace) -> DocumentStorage | None:
             f"{exc} (create the bucket in the Supabase dashboard first), or pass "
             "--local-only to keep the ZIPs on disk."
         ) from exc
-
-
-def _archive_and_ingest(
-    storage: DocumentStorage, tender: ScrapedTender, key: str, data: bytes
-) -> tuple[str, list[str]]:
-    """Upload the whole pack under ``key`` (the pointer the JSON cache keeps),
-    then unzip it and upsert Tender/Document/DocumentVersion rows for every
-    file inside — the shape the rest of the pipeline actually reads."""
-
-    async def _run() -> tuple[str, list[str]]:
-        await storage.put(key, data, content_type="application/zip")
-        url = await storage.url_for(key)
-        file_keys = await ingest.archive_and_record(tender, data, storage=storage)
-        return url, file_keys
-
-    return asyncio.run(_run())
 
 
 def main() -> int:
@@ -180,22 +151,27 @@ def main() -> int:
             tender = tender_from_row(row)
             print(f"\n[{index}/{len(rows)}] {tender.reference} — {tender.title[:70]}")
 
-            result: DownloadResult = downloader.download(tender)
-            if result.status != "downloaded" or result.zip_path is None:
-                failed += 1
-                print(f"  {result.status}: {result.error or 'no archive produced'}")
-                time.sleep(settings.download_settle_seconds)
-                continue
-
-            key = _storage_key(tender)
-            data = result.zip_path.read_bytes()
             if uploader is not None:
-                url, file_keys = _archive_and_ingest(uploader, tender, key, data)
-                store.update_tender_document(tender.reference, document_key=key, document_url=url)
-                print(f"  saved {result.zip_path.name} ({len(data):,} bytes)")
-                print(f"  supabase -> {key}  {url}")
-                print(f"  db -> {len(file_keys)} document(s) recorded")
+                outcome = asyncio.run(
+                    ingest.archive_downloaded(tender, downloader, storage=uploader)
+                )
+                result = outcome.download
+                if result.status != "downloaded" or result.zip_path is None:
+                    failed += 1
+                    print(f"  {result.status}: {result.error or 'no archive produced'}")
+                    time.sleep(settings.download_settle_seconds)
+                    continue
+                print(f"  saved {result.zip_path.name}")
+                print(f"  supabase -> {outcome.archive_url}")
+                print(f"  db -> {len(outcome.file_keys)} document(s) recorded")
             else:
+                result = downloader.download(tender)
+                if result.status != "downloaded" or result.zip_path is None:
+                    failed += 1
+                    print(f"  {result.status}: {result.error or 'no archive produced'}")
+                    time.sleep(settings.download_settle_seconds)
+                    continue
+                data = result.zip_path.read_bytes()
                 print(f"  kept locally -> {result.zip_path} ({len(data):,} bytes)")
             stored += 1
             time.sleep(settings.download_settle_seconds)

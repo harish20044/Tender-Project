@@ -119,9 +119,28 @@ class Tender(Base):
 
     published_date: Mapped[date | None] = mapped_column(Date)
     closing_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    opening_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     work_category: Mapped[str | None] = mapped_column(String(128))
     location: Mapped[str | None] = mapped_column(String(256))
+
+    # --- Scraper-owned fields ------------------------------------------------
+    # Populated by app.corpus.cppp.scrape via app.corpus.store; this is the
+    # portal's own listing data, kept on the same row as everything else the
+    # pipeline learns about a tender rather than in a separate cache file.
+    portal_tender_id: Mapped[str | None] = mapped_column(String(64))
+    detail_url: Mapped[str | None] = mapped_column(Text)
+    corrigendum_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_construction: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Which portal listing this was last seen on ("high_value", "latest_active").
+    source_listing: Mapped[str | None] = mapped_column(String(64))
+
+    # --- Document archive pointer --------------------------------------------
+    # The whole downloaded pack, as archived by scripts/download_documents.py.
+    # Distinct from DocumentVersion.s3_key, which is per extracted file.
+    archive_key: Mapped[str | None] = mapped_column(String(1024))
+    archive_url: Mapped[str | None] = mapped_column(Text)
+    archive_stored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     ingest_status: Mapped[IngestStatus] = mapped_column(
         Enum(IngestStatus, name="ingest_status"),
@@ -148,6 +167,8 @@ class Tender(Base):
         UniqueConstraint("reference_number", name="uq_tenders_reference_number"),
         Index("ix_tenders_closing_date", "closing_date"),
         Index("ix_tenders_ingest_status", "ingest_status"),
+        Index("ix_tenders_is_construction", "is_construction"),
+        Index("ix_tenders_work_category", "work_category"),
     )
 
 

@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     captcha_max_attempts: int = 8
     # Politeness pause between tenders; the portal is public infrastructure.
     download_settle_seconds: float = 3.0
+    # How often the periodic scrape task re-reads the portal listing.
+    scrape_interval_seconds: int = 900
+    # False until a manual `python scripts/download_documents.py` run has
+    # been confirmed to actually work against the live portal: the CAPTCHA
+    # gate's selectors have never been verified there (see documents.py).
+    # Once true, every newly-discovered tender is queued for download
+    # automatically after each periodic scrape — this drives a real Chrome
+    # and solves a live CAPTCHA per tender, so it needs Selenium, Tesseract,
+    # and a browser available wherever the Celery worker actually runs.
+    auto_download_documents: bool = False
 
     # --- Groq --------------------------------------------------------------
     groq_api_key: str = ""

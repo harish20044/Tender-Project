@@ -1,119 +1,173 @@
 """Persistence for scraped tenders.
 
-A JSON file rather than the database, deliberately and temporarily. Postgres
-with pgvector cannot be installed on a Windows machine without a compiler, and
-Docker is unavailable here, so requiring a database to see the dashboard would
-mean nobody can run it. The scraper writes here; the API reads here.
+Backed by the ``tenders`` table. This used to be a JSON file — Postgres with
+pgvector could not be installed on a Windows machine without a compiler, so
+requiring a database to see the dashboard would have meant nobody could run
+it. A real, reachable database is a given now, so this module was rewritten
+to use it, exactly as its own previous docstring said it eventually would:
+"the same two functions move to SQLAlchemy and nothing above this layer
+changes." The public interface (``save``, ``load``, ``update_tender_document``)
+is unchanged on purpose, so the API route, the scrape script, and the
+download script did not need to change with it.
 
-The interface is narrow on purpose. When a database is available, the same two
-functions move to SQLAlchemy and nothing above this layer changes.
+One behavioural difference worth knowing: the old file was replaced wholesale
+on every scrape, so a tender that dropped off the portal listing vanished
+from the cache. Upserting into a table does not drop rows, so a tender stays
+visible (with whatever it last read) even after it closes or is delisted.
 """
 
 from __future__ import annotations
 
-import json
-import tempfile
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import UTC, date, datetime
 from typing import Any
 
-from app.core.config import get_settings
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from app.core.logging import get_logger
 from app.corpus.cppp import ScrapedTender
+from app.db import models
+from app.db.session import session_scope
 
 logger = get_logger(__name__)
 
+SOURCE = "eprocure.gov.in/cppp"
 
-def _resolve(path: Path | str | None) -> Path:
-    """Where the cache lives.
 
-    Taken from settings rather than the working directory, so the scraper and
-    the API agree no matter where each was launched from — and so Compose can
-    point both at a mounted volume, where the repository layout the default
-    infers from does not exist.
+def _parse_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        return None
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _upsert(session: Session, tender: ScrapedTender) -> tuple[models.Tender, bool]:
+    """Insert or update one row. Returns (row, was_newly_created)."""
+    existing = session.scalar(
+        select(models.Tender).where(models.Tender.reference_number == tender.reference)
+    )
+    created = existing is None
+    row = existing or models.Tender(reference_number=tender.reference)
+
+    row.title = tender.title
+    row.issuing_authority = tender.organisation
+    row.published_date = _parse_date(tender.published_at)
+    row.closing_date = _parse_datetime(tender.closing_at)
+    row.opening_date = _parse_datetime(tender.opening_at)
+    row.work_category = tender.work_category
+    row.portal_tender_id = tender.tender_id
+    row.detail_url = tender.detail_url
+    row.corrigendum_count = tender.corrigendum_count
+    row.is_construction = tender.is_construction
+    row.source_listing = tender.source_listing
+
+    if created:
+        session.add(row)
+    session.flush()
+    return row, created
+
+
+def save(tenders: list[ScrapedTender], path: object = None) -> dict[str, Any]:
+    """Upsert a scrape result. ``path`` is accepted and ignored, kept only so
+    callers built for the old file-backed version do not need to change.
+
+    Returns a small summary: how many rows were new versus refreshed, and the
+    reference numbers that are new — which is what a caller (the periodic
+    scrape task, in particular) uses to know what to queue for download.
     """
-    if path:
-        return Path(path)
-    return get_settings().data_path / "cache" / "tenders.json"
+    new_references: list[str] = []
+    updated = 0
 
+    with session_scope() as session:
+        for tender in tenders:
+            _row, created = _upsert(session, tender)
+            if created:
+                new_references.append(tender.reference)
+            else:
+                updated += 1
 
-def save(tenders: list[ScrapedTender], path: Path | str | None = None) -> Path:
-    """Write the scrape result, replacing whatever was there."""
-    target = _resolve(path)
-    payload = {
-        "scraped_at": datetime.now(UTC).isoformat(),
-        "source": "eprocure.gov.in/cppp",
+    logger.info("tenders_saved", new=len(new_references), updated=updated, count=len(tenders))
+    return {
         "count": len(tenders),
-        "tenders": [tender.as_dict() for tender in tenders],
+        "new": len(new_references),
+        "updated": updated,
+        "new_references": new_references,
     }
-    _write(payload, target)
-    logger.info("tenders_saved", path=str(target), count=len(tenders))
-    return target
-
-
-def _write(payload: dict[str, Any], target: Path) -> None:
-    """Atomically replace the cache with ``payload``.
-
-    Written to a temporary file in the same directory and then moved, so a
-    crash mid-write cannot leave the API reading half a JSON document.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=target.parent, delete=False, suffix=".partial"
-    ) as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-        temp_path = Path(handle.name)
-
-    temp_path.replace(target)
 
 
 def update_tender_document(reference: str, *, document_key: str, document_url: str) -> bool:
     """Record where a tender's downloaded pack ended up, on its own row.
 
-    The archive itself is object storage, not this file, but this file is what
-    the dashboard and the rest of the pipeline read, so the pointer lives
-    here. Matches on reference, which the scraper already treats as unique per
-    run. Returns False when no row matches — a stale cache, not an error.
+    Matches on reference number. Returns False when no row matches — a stale
+    scrape, not an error.
     """
-    data = load()
-    rows: list[dict[str, Any]] = list(data.get("tenders", []))
+    with session_scope() as session:
+        row = session.scalar(
+            select(models.Tender).where(models.Tender.reference_number == reference)
+        )
+        if row is None:
+            logger.warning("tender_document_row_missing", reference=reference)
+            return False
 
-    for row in rows:
-        if row.get("reference") == reference:
-            row["document_key"] = document_key
-            row["document_url"] = document_url
-            row["document_stored_at"] = datetime.now(UTC).isoformat()
-            _write(
-                {
-                    "scraped_at": data.get("scraped_at"),
-                    "source": data.get("source"),
-                    "count": len(rows),
-                    "tenders": rows,
-                },
-                _resolve(None),
+        row.archive_key = document_key
+        row.archive_url = document_url
+        row.archive_stored_at = datetime.now(UTC)
+
+    logger.info("tender_document_recorded", reference=reference, key=document_key)
+    return True
+
+
+def _row_to_dict(row: models.Tender) -> dict[str, Any]:
+    return {
+        "reference": row.reference_number,
+        "tender_id": row.portal_tender_id,
+        "title": row.title,
+        "organisation": row.issuing_authority,
+        "published_at": row.published_date.isoformat() if row.published_date else None,
+        "closing_at": row.closing_date.isoformat() if row.closing_date else None,
+        "opening_at": row.opening_date.isoformat() if row.opening_date else None,
+        "corrigendum_count": row.corrigendum_count,
+        "work_category": row.work_category,
+        "is_construction": row.is_construction,
+        "source_listing": row.source_listing or "",
+        "scraped_at": row.updated_at.isoformat(),
+        "detail_url": row.detail_url,
+        "document_key": row.archive_key,
+        "document_url": row.archive_url,
+        "document_stored_at": row.archive_stored_at.isoformat() if row.archive_stored_at else None,
+    }
+
+
+def load(path: object = None) -> dict[str, Any]:
+    """Every scraped tender, shaped exactly like the old cache file was.
+
+    ``path`` is accepted and ignored, for the same reason as in ``save``.
+    Never raises: an empty table reads back as "nothing scraped yet", the
+    same as a missing file used to.
+    """
+    with session_scope() as session:
+        rows = session.scalars(
+            select(models.Tender).order_by(
+                models.Tender.closing_date.is_(None), models.Tender.closing_date
             )
-            logger.info("tender_document_recorded", reference=reference, key=document_key)
-            return True
+        ).all()
+        tenders = [_row_to_dict(row) for row in rows]
+        scraped_at = max((row.updated_at for row in rows), default=None)
 
-    logger.warning("tender_document_row_missing", reference=reference)
-    return False
-
-
-def load(path: Path | str | None = None) -> dict[str, Any]:
-    """Read the last scrape.
-
-    Returns an empty result rather than raising when nothing has been scraped
-    yet, so the API can report "no data" instead of failing.
-    """
-    source = _resolve(path)
-
-    if not source.is_file():
-        return {"scraped_at": None, "source": None, "count": 0, "tenders": []}
-
-    try:
-        with source.open(encoding="utf-8") as handle:
-            data: dict[str, Any] = json.load(handle)
-        return data
-    except json.JSONDecodeError as exc:
-        logger.error("tender_cache_corrupt", path=str(source), error=str(exc))
-        return {"scraped_at": None, "source": None, "count": 0, "tenders": []}
+    return {
+        "scraped_at": scraped_at.isoformat() if scraped_at else None,
+        "source": SOURCE if tenders else None,
+        "count": len(tenders),
+        "tenders": tenders,
+    }
