@@ -61,13 +61,17 @@ still needs a broker. Database, storage, and auth are Supabase regardless.
 docker compose up -d --build
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5174.
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:5173 |
-| API docs | http://localhost:8000/docs |
+| Frontend | http://localhost:5174 |
+| API docs | http://localhost:8001/docs |
 | Database / storage / auth | your Supabase dashboard |
+
+Ports are shifted off their frameworks' defaults (Vite's 5173, uvicorn's
+8000, Redis's 6379 → 5174, 8001, 6380) so this project can run alongside
+another local one without either fighting over a port.
 
 ### Getting tender data
 
@@ -158,15 +162,16 @@ API and frontend as ordinary processes.
 
 ### 1. The dashboard, end to end
 
-The dashboard needs no database at all — it reads tender notices scraped from
-the public procurement portal into a local file. Useful as a first check that
-things work before touching Supabase.
+The scraper writes tender notices straight into the `tenders` table, and the
+API reads them from there — so `DATABASE_URL` (section 0) needs to be set
+even for just this. Run the migration once first if you haven't:
 
 ```bash
 cd backend
 pip install -e ".[dev]"
+alembic upgrade head
 python scripts/scrape_tenders.py --pages 12
-python -m uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload --port 8001
 ```
 
 In a second terminal:
@@ -177,7 +182,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The dev server proxies `/api` to the backend, so
+Open http://localhost:5174. The dev server proxies `/api` to the backend, so
 there is no base URL to configure.
 
 Re-run the scrape whenever you want fresher notices:
@@ -204,10 +209,10 @@ comes from section 0 above. Then:
 
 ```bash
 alembic upgrade head
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8001
 ```
 
-API docs at http://localhost:8000/docs.
+API docs at http://localhost:8001/docs.
 
 ### 3. Document parsing, when you need it
 

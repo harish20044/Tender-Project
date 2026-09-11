@@ -10,7 +10,9 @@ export default defineConfig({
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   server: {
-    port: 5173,
+    // Not Vite's 5173 default — shifted so this project can run alongside
+    // another one on the same machine without a port collision.
+    port: 5174,
     // Required for the dev server to be reachable from outside the container.
     host: true,
     // Same-origin in development, so no CORS negotiation and no API base URL
@@ -21,7 +23,7 @@ export default defineConfig({
     // resolve to this container itself. Compose sets VITE_PROXY_TARGET.
     proxy: {
       "/api": {
-        target: process.env.VITE_PROXY_TARGET ?? "http://127.0.0.1:8000",
+        target: process.env.VITE_PROXY_TARGET ?? "http://127.0.0.1:8001",
         changeOrigin: true,
       },
     },

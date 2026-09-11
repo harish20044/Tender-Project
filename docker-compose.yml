@@ -4,8 +4,11 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
+    # Host side only, so this doesn't collide with another local project's
+    # Redis on 6379 — the container still listens on 6379 internally, which
+    # is what every REDIS_URL/CELERY_*_URL below actually connects to.
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -19,8 +22,11 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     env_file: .env
+    # 8001, not the framework's 8000 default — kept the same on both the host
+    # side and the container's own bind so Docker and native runs agree on
+    # one port instead of drifting apart.
     ports:
-      - "8000:8000"
+      - "8001:8001"
     environment:
       # The repository layout the default infers from does not exist here, so
       # the data directory is named explicitly and mounted below.
@@ -33,9 +39,9 @@ services:
       # Scraped listings, shared with the host so a scrape run either side is
       # visible to the other.
       - ./data:/app/data
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -72,12 +78,14 @@ services:
     environment:
       # Inside the network the API is another container, so localhost would
       # resolve to this one.
-      VITE_PROXY_TARGET: http://api:8000
+      VITE_PROXY_TARGET: http://api:8001
     depends_on:
       api:
         condition: service_healthy
+    # 5174, not Vite's 5173 default — see vite.config.ts's server.port,
+    # which this mirrors so Docker and native runs land on the same port.
     ports:
-      - "5173:5173"
+      - "5174:5174"
     volumes:
       - ./frontend:/app
       - /app/node_modules

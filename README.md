@@ -73,8 +73,8 @@ docker compose up --build
 
 | Service | URL |
 |---|---|
-| Frontend | http://localhost:5173 |
-| API docs | http://localhost:8000/docs |
+| Frontend | http://localhost:5174 |
+| API docs | http://localhost:8001/docs |
 | Database / storage / auth | your Supabase project dashboard |
 
 Apply migrations on first run:

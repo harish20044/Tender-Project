@@ -36,7 +36,7 @@ async function request<T>(path: string): Promise<T> {
 
   if (!response.ok) {
     throw new Error(
-      `The API returned ${response.status}. Check that it is running on port 8000.`,
+      `The API returned ${response.status}. Check that it is running on port 8001.`,
     );
   }
 

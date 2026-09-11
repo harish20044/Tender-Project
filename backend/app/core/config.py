@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # --- Application -------------------------------------------------------
     app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5174"
 
     # --- Database ----------------------------------------------------------
     # Optional so the API can serve the tender listing, which reads a scraped
