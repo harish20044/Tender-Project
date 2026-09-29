@@ -6,7 +6,6 @@ Everything else — the image conditioning, the answer hygiene — is pure
 Pillow and tested outright.
 """
 
-import shutil
 from io import BytesIO
 from pathlib import Path
 
@@ -14,11 +13,11 @@ import pytest
 from PIL import Image, ImageDraw, ImageFont
 
 from app.corpus.captcha import (
-    DEFAULT_WINDOWS_PATH,
     is_plausible,
     normalise,
     preprocess,
     solve,
+    tesseract_available,
 )
 
 # A distinctive string: mixed letters and digits, no characters the whitelist
@@ -27,7 +26,9 @@ SAMPLE_TEXT = "7X4B2M"
 
 
 def _tesseract_present() -> bool:
-    return bool(shutil.which("tesseract") or DEFAULT_WINDOWS_PATH.is_file())
+    # Defers to the module's own resolution rather than re-deriving it, so a
+    # binary named only by TESSERACT_CMD in .env counts here too.
+    return tesseract_available()
 
 
 def test_normalise_keeps_only_the_portal_alphabet() -> None:

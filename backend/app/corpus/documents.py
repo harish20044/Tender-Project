@@ -194,6 +194,9 @@ class TenderDocumentDownloader:
         self._max_attempts = max(1, max_captcha_attempts)
         self._page_load_timeout = page_load_timeout
         self._download_timeout = download_timeout
+        # The department portal is a separate site and a slower one; the hop
+        # needs longer to settle than a click within CPPP does.
+        self._portal_settle_seconds = 6.0
         self._listing_search_pages = listing_search_pages
         self._debug_dir = Path(debug_dir) if debug_dir else None
         self._driver: webdriver.Chrome | None = None
@@ -232,6 +235,23 @@ class TenderDocumentDownloader:
         # webdriver-manager dependency or pre-installed driver is needed.
         driver = webdriver.Chrome(options=options)
         driver.set_page_load_timeout(self._page_load_timeout)
+
+        # The prefs above only govern the tab the browser starts with, and the
+        # pack is fetched from a link that opens a new one on another origin —
+        # which headless Chrome silently declines to save. Browser-scoped
+        # download behaviour covers every target, including tabs opened later.
+        try:
+            driver.execute_cdp_cmd(
+                "Browser.setDownloadBehavior",
+                {
+                    "behavior": "allow",
+                    "downloadPath": str(self._download_dir),
+                    "eventsEnabled": True,
+                },
+            )
+        except Exception as exc:  # older chromedriver: prefs remain the fallback
+            logger.warning("download_behavior_unset", error=str(exc))
+
         return driver
 
     def download(self, tender: ScrapedTender) -> DownloadResult:
@@ -249,17 +269,10 @@ class TenderDocumentDownloader:
                     error="No detail page and no listing row matched.",
                 )
 
-            link = self._find_download_link()
-            if link is None:
-                logger.warning(
-                    "download_link_absent", reference=tender.reference, page_title=driver.title
-                )
-                return DownloadResult(tender.reference, tender.tender_id, "no_download_link")
-
-            # The link leads to the CAPTCHA gate, sometimes in a new tab.
-            self._click(link)
-            self._adopt_new_tab()
-
+            # The gate comes first. The detail page carries the CAPTCHA form
+            # itself, and the documents are not linked anywhere on it until
+            # that form is answered — so looking for a download link before
+            # passing the gate finds nothing and gives up a step too early.
             attempts = self._pass_captcha_gate()
             if attempts is None:
                 return DownloadResult(
@@ -269,12 +282,36 @@ class TenderDocumentDownloader:
                     attempts=self._max_attempts,
                 )
 
-            # With the gate passed the portal either streams the file straight
-            # away or returns to a page where the link now delivers it.
+            # CPPP publishes notices; it does not host the packs. Past the
+            # gate the detail page carries a "Tender Document" link into the
+            # issuing department's own portal, and that is where the files
+            # actually live.
+            if not self._follow_to_department_portal():
+                logger.warning(
+                    "department_link_absent",
+                    reference=tender.reference,
+                    page_title=driver.title,
+                    attempts=attempts,
+                )
+                return DownloadResult(
+                    tender.reference, tender.tender_id, "no_download_link", attempts=attempts
+                )
+
             link = self._find_download_link()
-            if link is not None:
-                self._click(link)
-                self._adopt_new_tab()
+            if link is None:
+                logger.warning(
+                    "download_link_absent",
+                    reference=tender.reference,
+                    page_title=driver.title,
+                    url=driver.current_url[:200],
+                    attempts=attempts,
+                )
+                return DownloadResult(
+                    tender.reference, tender.tender_id, "no_download_link", attempts=attempts
+                )
+
+            self._click(link)
+            self._adopt_new_tab()
 
             zip_path = wait_for_new_zip(self._download_dir, before, timeout=self._download_timeout)
             if zip_path is None:
@@ -303,10 +340,29 @@ class TenderDocumentDownloader:
 
     # --- navigation --------------------------------------------------------- #
 
+    # The portal serves this instead of the tender when a detail URL is used
+    # outside the session that produced it.
+    _INVALID_URL_MARKER = "invalid url"
+
     def _open_tender_page(self, tender: ScrapedTender) -> bool:
+        """Open the tender's detail page, by whichever route actually works.
+
+        A stored detail URL is tried first because it is one request rather
+        than a walk through the listing, but the portal binds those URLs to
+        the session that produced them: pasted into a fresh browser, even
+        minutes later, they render "Invalid Url.Please Check" instead of the
+        tender. So the result is checked, and the listing walk — which clicks
+        the row's own link and therefore carries the session the portal
+        wants — is the fallback rather than an afterthought.
+        """
+        driver = self._require_driver()
+
         if tender.detail_url:
-            self._require_driver().get(tender.detail_url)
-            return True
+            driver.get(tender.detail_url)
+            if self._INVALID_URL_MARKER not in (driver.page_source or "").lower():
+                return True
+            logger.info("detail_url_rejected", reference=tender.reference)
+
         return self._open_via_listing(tender)
 
     def _open_via_listing(self, tender: ScrapedTender) -> bool:
@@ -329,6 +385,71 @@ class TenderDocumentDownloader:
                     return True
             logger.info("listing_page_scanned", page=page, reference=tender.reference)
         return False
+
+    # The detail page labels the outbound link "Tender Document". Matched on
+    # the label's own text node rather than `contains(., ...)`, which also
+    # matches every ancestor holding that text — including <body>, whose
+    # "following" links are the page footer, not the tender.
+    _DEPARTMENT_LINK_XPATH = (
+        "//*[normalize-space(text())='Tender Document']/following::a[starts-with(@href, 'http')][1]"
+    )
+    # Fallback, for a page that labels it differently: NIC's GePNIC
+    # deployments (the large majority) and the handful of bespoke portals.
+    _DEPARTMENT_LINK_MARKERS = ("tnid", "tenderdetails", "tenderview", "tenderdocument")
+    # Page furniture that sits in the same document and would otherwise
+    # satisfy "an external link": the mobile apps, and CPPP's own sibling
+    # portals listed in the navigation.
+    _NON_TENDER_HOSTS = (
+        "apps.apple.com",
+        "play.google.com",
+        "facebook.com",
+        "twitter.com",
+        "x.com",
+        "youtube.com",
+        "linkedin.com",
+        "instagram.com",
+        "nic.in/nicgep/app",
+    )
+
+    def _is_department_link(self, href: str) -> bool:
+        if not href.startswith("http") or "eprocure.gov.in/cppp" in href:
+            return False
+        return not any(host in href for host in self._NON_TENDER_HOSTS)
+
+    def _department_link(self) -> Any | None:
+        driver = self._require_driver()
+
+        for element in driver.find_elements(By.XPATH, self._DEPARTMENT_LINK_XPATH):
+            if self._is_department_link((element.get_attribute("href") or "").lower()):
+                return element
+
+        for element in driver.find_elements(By.TAG_NAME, "a"):
+            href = (element.get_attribute("href") or "").lower()
+            if self._is_department_link(href) and any(
+                marker in href for marker in self._DEPARTMENT_LINK_MARKERS
+            ):
+                return element
+        return None
+
+    def _follow_to_department_portal(self) -> bool:
+        """Click through to whichever portal actually holds the documents.
+
+        Clicked rather than navigated to: these URLs are bound to the session
+        that produced them, and fetching one directly returns GePNIC's
+        "Unauthorized Page" exactly as a stored CPPP detail URL returns
+        "Invalid Url". Returns False when the tender links nowhere, which is
+        a tender whose pack CPPP simply does not point at.
+        """
+        element = self._department_link()
+        if element is None:
+            return False
+
+        driver = self._require_driver()
+        logger.info("following_department_link", url=(element.get_attribute("href") or "")[:200])
+        self._click(element)
+        time.sleep(self._portal_settle_seconds)
+        self._adopt_new_tab()
+        return "unauthorizationpage" not in driver.current_url.lower()
 
     # --- the CAPTCHA gate ---------------------------------------------------- #
 
@@ -376,10 +497,23 @@ class TenderDocumentDownloader:
         return solve(image.screenshot_as_png, debug_dir=self._debug_dir)
 
     def _refresh_captcha(self) -> None:
-        refresh = _first_present(self._require_driver(), CAPTCHA_REFRESH_SELECTORS, timeout=2)
+        """Get a different CAPTCHA image to read.
+
+        Reloading the page is the fallback rather than the exception: this
+        build of the portal renders the CAPTCHA inline on the detail page
+        with no reload control beside it, and without a new image an
+        unreadable one would simply be read again, identically, until the
+        attempt budget ran out.
+        """
+        driver = self._require_driver()
+        refresh = _first_present(driver, CAPTCHA_REFRESH_SELECTORS, timeout=2)
         if refresh is not None:
             self._click(refresh)
             time.sleep(0.8)
+            return
+
+        driver.refresh()
+        time.sleep(1.5)
 
     def _captcha_rejected(self) -> bool:
         driver = self._require_driver()

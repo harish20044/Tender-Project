@@ -25,6 +25,7 @@ from pathlib import Path
 
 from PIL import Image, ImageFilter, ImageOps, ImageStat
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,16 +38,35 @@ DEFAULT_WINDOWS_PATH = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 MIN_PLAUSIBLE_LENGTH = 4
 MAX_PLAUSIBLE_LENGTH = 8
 
-# Tesseract page segmentation modes to try, in order: 7 treats the image as a
-# single text line, 8 as a single word, 13 as a raw line without layout
-# analysis. A CAPTCHA is one of the first two; trying all three and keeping
-# the first plausible read recovers from the mode guessing wrong.
+# Tesseract page segmentation modes for the whole-image fallback: 7 treats it
+# as a single text line, 8 as a single word, 13 as a raw line without layout
+# analysis. Only used when segmentation cannot find a plausible glyph count.
 _PSM_MODES = (7, 8, 13)
 
-# The portal's validation is case-insensitive and its alphabet is
-# alphanumeric, so the whitelist and the upper-casing both trade a guess the
-# OCR is bad at (case) for one it is good at (shape).
-_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+# Each isolated glyph is still read with --psm 8 rather than 10 ("single
+# character"), which measured worse on real portal images: 83% of characters
+# against 31%, on the six-sample set the thresholds below were tuned on.
+_GLYPH_PSM = 8
+
+# The portal draws mixed case — lowercase b, d, x, a and e all appear in real
+# samples — so the whitelist has to admit it even though validation is
+# case-insensitive and `normalise` upper-cases the answer afterwards.
+# Restricting Tesseract to uppercase made it force lowercase glyphs into the
+# wrong letter rather than skip them.
+_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz"
+
+# Tuned against real portal CAPTCHAs (150x40, coloured glyphs and coloured
+# speckle on white). 180 with a greyscale median pass first isolates exactly
+# six glyphs on every sample; the 160 the synthetic stand-in wanted merged or
+# dropped them.
+_BINARY_THRESHOLD = 180
+# Tesseract needs far more pixels per glyph than a 150x40 CAPTCHA gives it.
+_GLYPH_SCALE = 8
+_GLYPH_PAD = 15
+# A column gap this wide ends a glyph; anything narrower is one character's
+# own internal whitespace.
+_GLYPH_GAP = 1
+_MIN_GLYPH_WIDTH = 2
 
 _CONFIGURED = False
 
@@ -54,9 +74,11 @@ _CONFIGURED = False
 def configure_tesseract(cmd: str | None = None) -> str | None:
     """Point pytesseract at a usable tesseract binary, once per process.
 
-    Precedence: an explicit argument, then ``TESSERACT_CMD``, then the Windows
-    default location, then whatever is on PATH. Returns the command that will
-    be used, so callers can distinguish "found" from "will try PATH".
+    Precedence: an explicit argument, then ``TESSERACT_CMD`` — read from
+    settings, so a value in ``.env`` counts, not just one exported into the
+    process — then the Windows default location, then whatever is on PATH.
+    Returns the command that will be used, so callers can distinguish "found"
+    from "will try PATH".
     """
     global _CONFIGURED
 
@@ -67,6 +89,7 @@ def configure_tesseract(cmd: str | None = None) -> str | None:
 
     candidates = (
         cmd,
+        get_settings().tesseract_cmd or None,
         os.environ.get("TESSERACT_CMD"),
         str(DEFAULT_WINDOWS_PATH) if DEFAULT_WINDOWS_PATH.is_file() else None,
     )
@@ -100,35 +123,131 @@ def is_plausible(text: str) -> bool:
 
 
 def preprocess(image: Image.Image) -> Image.Image:
-    """Grayscale, contrast-normalise, binarise and denoise.
+    """Grayscale, contrast-normalise, denoise and binarise.
 
-    The portal draws dark digits over a pale, speckled background, and also
-    re-issues dark-background variants, so the inversion decision is taken
-    from the image itself rather than assumed. Tesseract wants crisp black
-    text on white; the median filter removes the speckle that survives
-    thresholding.
+    The portal draws coloured characters over a pale background scattered
+    with coloured speckle, and also re-issues dark-background variants, so
+    the inversion decision is taken from the image itself rather than
+    assumed. The median pass runs on greyscale, *before* thresholding, so
+    speckle is smoothed away instead of being frozen into black pixels that
+    later split a glyph in two or invent one of their own.
     """
     grey = image.convert("L")
     if ImageStat.Stat(grey).mean[0] < 128:
         grey = ImageOps.invert(grey)
     grey = ImageOps.autocontrast(grey)
-    binary = grey.point(lambda value: 0 if value < 160 else 255, "1")
-    return binary.filter(ImageFilter.MedianFilter(size=3))
+    grey = grey.filter(ImageFilter.MedianFilter(size=3))
+    return grey.point(lambda value: 0 if value < _BINARY_THRESHOLD else 255, "1")
+
+
+def glyph_spans(binary: Image.Image) -> list[tuple[int, int]]:
+    """Column ranges holding one character each.
+
+    The portal spaces its characters out and sits them at varying baselines,
+    which is what makes Tesseract drop half of them when it reads the image
+    as a line. A vertical projection profile splits them cleanly, because
+    the gaps between characters contain no ink at all.
+    """
+    width, height = binary.size
+    # One flat read rather than per-pixel access: the projection touches every
+    # pixel, and PixelAccess indexing from Python is markedly slower.
+    data = list(binary.getdata())
+    inked = [any(data[y * width + x] == 0 for y in range(height)) for x in range(width)]
+
+    spans: list[tuple[int, int]] = []
+    start: int | None = None
+    gap = 0
+    for x, is_inked in enumerate(inked):
+        if is_inked:
+            if start is None:
+                start = x
+            gap = 0
+        elif start is not None:
+            gap += 1
+            if gap > _GLYPH_GAP:
+                if x - gap - start >= _MIN_GLYPH_WIDTH:
+                    spans.append((start, x - gap))
+                start, gap = None, 0
+    if start is not None and width - start >= _MIN_GLYPH_WIDTH:
+        spans.append((start, width))
+    return spans
+
+
+def _glyph_image(binary: Image.Image, span: tuple[int, int]) -> Image.Image:
+    """One character, trimmed to its own ink, enlarged and padded.
+
+    Tesseract is trained on print-resolution text; a glyph barely 20 pixels
+    tall is far outside that, so it is scaled up and given a white margin to
+    sit in rather than being read hard against the crop edge.
+    """
+    x0, x1 = span
+    height = binary.size[1]
+    glyph = binary.crop((max(0, x0 - 1), 0, min(binary.size[0], x1 + 1), height))
+
+    glyph_width, glyph_height = glyph.size
+    data = list(glyph.getdata())
+    rows = [
+        y
+        for y in range(glyph_height)
+        if any(data[y * glyph_width + x] == 0 for x in range(glyph_width))
+    ]
+    if rows:
+        glyph = glyph.crop((0, max(0, rows[0] - 1), glyph_width, min(height, rows[-1] + 2)))
+
+    # Upscaled in greyscale, not bilevel: LANCZOS can only anti-alias the
+    # enlarged strokes if it has intermediate values to work with, and those
+    # smoothed edges are worth about five percentage points of accuracy.
+    glyph = glyph.convert("L").resize(
+        (glyph.size[0] * _GLYPH_SCALE, glyph.size[1] * _GLYPH_SCALE),
+        Image.Resampling.LANCZOS,
+    )
+    padded = Image.new("L", (glyph.size[0] + _GLYPH_PAD * 2, glyph.size[1] + _GLYPH_PAD * 2), 255)
+    padded.paste(glyph, (_GLYPH_PAD, _GLYPH_PAD))
+    return padded
+
+
+def _ocr(image: Image.Image, psm: int) -> str:
+    import pytesseract
+
+    config = f"--oem 3 --psm {psm} -c tessedit_char_whitelist={_WHITELIST}"
+    try:
+        return str(pytesseract.image_to_string(image, config=config))
+    except pytesseract.TesseractError:
+        logger.warning("captcha_ocr_mode_failed", psm=psm)
+        return ""
+
+
+def read_glyphs(binary: Image.Image) -> str:
+    """Read a preprocessed image one character at a time.
+
+    Reading the image as a whole loses characters — measured at 28% of them
+    correct against real portal CAPTCHAs, versus 83% this way — because the
+    portal's spacing and baseline jitter defeat Tesseract's line layout
+    analysis. Isolating each glyph removes the layout question entirely.
+    """
+    letters = []
+    for span in glyph_spans(binary):
+        read = normalise(_ocr(_glyph_image(binary, span), _GLYPH_PSM))
+        # One glyph is one character; a multi-character read means Tesseract
+        # saw noise alongside it, and the first character is the real one.
+        letters.append(read[:1])
+    return "".join(letters)
 
 
 def read_text(image: Image.Image) -> str:
-    """OCR one preprocessed image, trying the segmentation modes in turn."""
-    import pytesseract
+    """OCR one preprocessed image, per glyph, falling back to the whole image.
 
-    config = f"--oem 3 -c tessedit_char_whitelist={_WHITELIST}"
-    best = ""
+    The fallback matters when segmentation finds an implausible number of
+    glyphs — touching characters, or speckle heavy enough to survive the
+    median pass — where reading the image as one line is the better guess.
+    """
+    segmented = read_glyphs(image)
+    if is_plausible(segmented):
+        return segmented
+
+    best = segmented
     for psm in _PSM_MODES:
-        try:
-            raw = pytesseract.image_to_string(image, config=f"{config} --psm {psm}")
-        except pytesseract.TesseractError:
-            logger.warning("captcha_ocr_mode_failed", psm=psm)
-            continue
-        candidate = normalise(raw)
+        candidate = normalise(_ocr(image, psm))
         if is_plausible(candidate):
             return candidate
         if len(candidate) > len(best):
