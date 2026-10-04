@@ -6,9 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import tenders
+from app.api.routes import documents, tenders
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
+from app.core.tls import install_system_trust
 
 logger = get_logger(__name__)
 
@@ -17,6 +18,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
+    install_system_trust()
     logger.info(
         "starting",
         env=settings.app_env,
@@ -59,6 +61,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(tenders.router)
+    app.include_router(documents.router)
 
     return app
 

@@ -28,6 +28,16 @@ dependencies = [
   # Model providers (HTTP only; nothing runs locally)
   "httpx>=0.28",
   "tenacity>=9.0",
+  # Verifies TLS against the OS trust store. Networks that inspect TLS re-sign
+  # every certificate with an internal CA that Python's bundled list does not
+  # carry, and without this every provider call fails to verify. See
+  # app/core/tls.py.
+  "truststore>=0.10",
+
+  # Document pipeline. PyMuPDF is a base dependency rather than part of the
+  # parsing extra because upload, chunking and retrieval all depend on it; the
+  # extra remains for the heavier OCR and table stack.
+  "pymupdf>=1.24",
 
   # Similarity
   "datasketch>=1.6",
