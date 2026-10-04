@@ -82,7 +82,8 @@ export function Sidebar() {
       <div className="border-t border-rule px-5 py-3">
         <p className="label">Status</p>
         <p className="mt-1 text-xs text-ink-faint">
-          Scaffold. Screens are routed and specified, not yet wired to the API.
+          Dashboard, Upload, Ask and Decision Report run against the live API.
+          Workspace and Comparison are still specifications.
         </p>
       </div>
     </aside>
