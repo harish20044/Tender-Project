@@ -174,6 +174,7 @@ async def ingest_pdf(
                     content_hash=chunk_digest,
                     page_from=chunk.page_from,
                     page_to=chunk.page_to,
+                    page_offsets=[[page, offset] for page, offset in chunk.page_offsets],
                     bbox=chunk.bbox,
                     section_path=chunk.section_path,
                     is_table=chunk.is_table,

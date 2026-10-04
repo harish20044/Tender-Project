@@ -148,3 +148,53 @@ def test_an_unanswerable_answer_carries_no_citations() -> None:
 
     assert answer.citations == []
     assert answer.confidence == 0.0
+
+
+# --- page attribution ------------------------------------------------------ #
+
+
+def _multipage() -> ParsedDocument:
+    """Two pages whose text is distinct enough to tell apart by content."""
+    return ParsedDocument(
+        pages=[
+            _page(1, "Earnest money deposit is Rs 5,00,000 payable by bank guarantee. " * 12),
+            _page(2, "Liquidated damages accrue at 0.05 percent per day of delay. " * 12),
+        ]
+    )
+
+
+def test_a_chunk_knows_which_page_each_offset_belongs_to() -> None:
+    chunks = chunk_document(_multipage())
+
+    for chunk in chunks:
+        assert chunk.page_offsets
+        assert chunk.page_at(0) == chunk.page_offsets[0][0]
+
+
+def test_a_quote_is_attributed_to_its_own_page_not_the_chunk_start() -> None:
+    chunks = chunk_document(_multipage())
+
+    pages = {
+        probe: next((page for chunk in chunks if (page := chunk.page_of(probe)) is not None), None)
+        for probe in ("Earnest money deposit", "Liquidated damages accrue")
+    }
+
+    assert pages["Earnest money deposit"] == 1
+    assert pages["Liquidated damages accrue"] == 2
+
+
+def test_a_quote_absent_from_a_chunk_resolves_to_no_page() -> None:
+    chunk = chunk_document(_multipage())[0]
+
+    assert chunk.page_of("a clause that appears nowhere in this document") is None
+    assert chunk.page_of("") is None
+
+
+def test_chunks_prefer_to_break_at_page_boundaries() -> None:
+    # Pages large enough to stand alone should not be stitched together, since
+    # a chunk spanning pages can only cite a range.
+    parsed = ParsedDocument(pages=[_page(n, "clause text " * 300) for n in range(1, 4)])
+
+    chunks = chunk_document(parsed)
+
+    assert any(not chunk.spans_pages for chunk in chunks)

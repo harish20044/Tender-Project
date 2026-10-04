@@ -58,6 +58,10 @@ def _max_passage_chars() -> int:
 # the part that identifies the passage.
 _CITATION_PATTERN = re.compile(r"[\[\(【]\s*(\d{1,2})\s*(?:[^\]\)】]*)?[\]\)】]")
 
+# Sentence-ish boundaries. Good enough to find a run of the answer long enough
+# to locate in the source; it is not trying to be a sentence tokenizer.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.;:])\s+|\n+")
+
 
 @dataclass
 class Answer:
@@ -89,6 +93,30 @@ def _confidence(passages: list[Passage], answered: bool) -> float:
     if not answered or not passages:
         return 0.0
     return min(1.0, 0.35 + 0.1 * len(passages))
+
+
+def _quoted_from(body: str, passage: Passage) -> str | None:
+    """The longest run of the answer that appears verbatim in the passage.
+
+    Models quote figures and clause wording directly far more often than they
+    paraphrase them, so the overlap is usually enough to locate the sentence —
+    and with it the page — without asking the model for a page it would only
+    guess at.
+    """
+    haystack = " ".join(passage.content.split()).lower()
+    best: str | None = None
+    for sentence in _SENTENCE_SPLIT.split(body):
+        cleaned = " ".join(sentence.split())
+        if len(cleaned) < 25:
+            continue
+        probe = re.sub(r"[\[\(【]\s*\d{1,2}[^\]\)】]*[\]\)】]", "", cleaned).strip()
+        if (
+            len(probe) >= 25
+            and probe.lower()[:60] in haystack
+            and (best is None or len(probe) > len(best))
+        ):
+            best = probe
+    return best
 
 
 async def answer_question(
@@ -132,18 +160,24 @@ async def answer_question(
     }
     cited = sorted(referenced) or list(range(1, len(passages) + 1))
 
-    citations = [
-        {
-            "marker": index,
-            "chunk_id": passages[index - 1].chunk_id,
-            "document_id": passages[index - 1].document_id,
-            "filename": passages[index - 1].filename,
-            "page_from": passages[index - 1].page_from,
-            "page_to": passages[index - 1].page_to,
-            "citation": passages[index - 1].citation,
-        }
-        for index in cited
-    ]
+    # Where the answer quotes the document, the citation narrows to the page
+    # that quote sits on rather than naming the passage's whole page range.
+    citations = []
+    for index in cited:
+        passage = passages[index - 1]
+        quoted = _quoted_from(body, passage)
+        page = passage.page_of(quoted) if quoted else None
+        citations.append(
+            {
+                "marker": index,
+                "chunk_id": passage.chunk_id,
+                "document_id": passage.document_id,
+                "filename": passage.filename,
+                "page_from": page or passage.page_from,
+                "page_to": page or passage.page_to,
+                "citation": f"{passage.filename} p.{page}" if page else passage.citation,
+            }
+        )
 
     logger.info("question_answered", question=question[:70], citations=len(citations))
     return Answer(

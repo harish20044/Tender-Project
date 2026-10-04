@@ -86,13 +86,13 @@ def _page_for(quote: str | None, passages: list[Passage]) -> tuple[int | None, s
     """
     if not quote:
         return None, None
-    needle = " ".join(quote.split())[:60].lower()
-    if not needle:
-        return None, None
     for passage in passages:
-        haystack = " ".join(passage.content.split()).lower()
-        if needle in haystack:
-            return passage.page_from, passage.chunk_id
+        page = passage.page_of(quote)
+        if page is not None:
+            # The page the quote sits on, not the first page of the passage's
+            # range — a passage carrying a page break would otherwise cite the
+            # wrong page for everything after it.
+            return page, passage.chunk_id
     return None, None
 
 

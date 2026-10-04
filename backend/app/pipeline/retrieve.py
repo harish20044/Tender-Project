@@ -14,7 +14,7 @@ tuned on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.db import models
 from app.db.session import session_scope
+from app.pipeline.chunk import offset_of
 from app.providers.base import EmbeddingProvider, RerankProvider
 
 logger = get_logger(__name__)
@@ -41,12 +42,39 @@ class Passage:
     document_id: str
     filename: str
     score: float
+    # [[page, offset], ...] inside `content`; see models.Chunk.page_offsets.
+    page_offsets: list[list[int]] = field(default_factory=list)
 
     @property
     def citation(self) -> str:
         if self.page_from == self.page_to:
             return f"{self.filename} p.{self.page_from}"
         return f"{self.filename} pp.{self.page_from}-{self.page_to}"
+
+    def page_at(self, offset: int) -> int:
+        page = self.page_from
+        for entry in self.page_offsets:
+            if len(entry) == 2 and offset >= entry[1]:
+                page = entry[0]
+            else:
+                break
+        return page
+
+    def page_of(self, quote: str) -> int | None:
+        """The page a quote sits on, or None when it is not in this passage.
+
+        This is what turns a range like "pp. 3-4" into the page an estimator
+        can actually turn to.
+        """
+        if not quote:
+            return None
+        offset = offset_of(quote, self.content)
+        return self.page_at(offset) if offset >= 0 else None
+
+    def cite_for(self, quote: str | None) -> str:
+        """A citation narrowed to one page where the quote allows it."""
+        page = self.page_of(quote) if quote else None
+        return f"{self.filename} p.{page}" if page else self.citation
 
 
 def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passage]:
@@ -58,6 +86,7 @@ def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passa
             models.Chunk.content,
             models.Chunk.page_from,
             models.Chunk.page_to,
+            models.Chunk.page_offsets,
             models.Document.id,
             models.Document.filename,
         )
@@ -71,8 +100,9 @@ def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passa
             content=row[1],
             page_from=row[2],
             page_to=row[3],
-            document_id=str(row[4]),
-            filename=row[5],
+            page_offsets=[list(entry) for entry in (row[4] or [])],
+            document_id=str(row[5]),
+            filename=row[6],
             score=0.0,
         )
         for row in rows

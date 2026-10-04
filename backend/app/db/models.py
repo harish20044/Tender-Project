@@ -265,6 +265,11 @@ class Chunk(Base):
 
     page_from: Mapped[int] = mapped_column(Integer, nullable=False)
     page_to: Mapped[int] = mapped_column(Integer, nullable=False)
+    # [[page, offset], ...] — where each page's text begins inside `content`.
+    # A chunk that spans a page break can only cite the whole range without
+    # this; with it, a quote found at an offset is attributed to the page it
+    # actually sits on.
+    page_offsets: Mapped[list[list[int]] | None] = mapped_column(JSONB)
     # [x0, y0, x1, y1] in PDF points, for the viewer's highlight overlay.
     bbox: Mapped[list[float] | None] = mapped_column(JSONB)
 
