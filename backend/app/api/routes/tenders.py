@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Query
@@ -53,6 +54,10 @@ def list_tenders(
         description="Keep only tenders that commission construction work.",
     ),
     category: str | None = Query(default=None, description="Exact work category match."),
+    include_closed: bool = Query(
+        default=False,
+        description="Include tenders whose submission deadline has already passed.",
+    ),
     sort: Literal["closing", "published"] = Query(default="closing"),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> TenderList:
@@ -65,6 +70,15 @@ def list_tenders(
 
     if category:
         rows = [row for row in rows if row.get("work_category") == category]
+
+    if not include_closed:
+        # Sorting by soonest deadline otherwise puts the tenders nobody can
+        # bid on at the top of the page. Rows are never deleted — the scraper
+        # upserts — so without this the listing silently fills with the past.
+        today = datetime.now(UTC).date().isoformat()
+        rows = [
+            row for row in rows if not row.get("closing_at") or str(row["closing_at"])[:10] >= today
+        ]
 
     # Rows with no parsable date sort last rather than crashing the comparison
     # or silently jumping to the front.
