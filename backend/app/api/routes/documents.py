@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
@@ -19,7 +19,7 @@ from app.pipeline.retrieve import retrieve
 from app.providers.groq import GroqChatProvider
 from app.providers.jina import JinaProvider
 from app.schemas.faqs import FAQS, FAQS_BY_KEY
-from app.storage import get_storage
+from app.storage import StorageError, get_storage
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -208,6 +208,32 @@ async def run_faqs(
     )
 
 
+@router.get("/raw/{key:path}")
+async def raw_document(key: str) -> Response:
+    """Serve a stored document.
+
+    The filesystem backend's `url_for` has always pointed here; until now
+    nothing answered, so every link it produced was dead. Served through the
+    API rather than from disk directly because the filesystem backend has no
+    concept of an expiring URL, and this is the only place that can later
+    grow an access check.
+    """
+    try:
+        data = await get_storage().get(key)
+    except StorageError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    media_type = "application/pdf" if key.lower().endswith(".pdf") else "application/octet-stream"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            # inline, so a browser opens it at a page rather than downloading it
+            "Content-Disposition": f'inline; filename="{key.rsplit("/", 1)[-1]}"'
+        },
+    )
+
+
 class TenderDocumentSummary(BaseModel):
     tender_id: str
     reference: str
@@ -215,6 +241,9 @@ class TenderDocumentSummary(BaseModel):
     documents: int
     chunks: int
     pages: int
+    # Where the most recent document lives, so a caller can link straight to
+    # the source rather than reconstructing the key and guessing wrong.
+    document_url: str | None = None
 
 
 @router.get("", response_model=list[TenderDocumentSummary])
@@ -229,6 +258,7 @@ def list_uploaded() -> list[TenderDocumentSummary]:
                 func.count(func.distinct(models.Document.id)),
                 func.count(func.distinct(models.Chunk.id)),
                 func.coalesce(func.sum(func.distinct(models.DocumentVersion.page_count)), 0),
+                func.max(models.DocumentVersion.s3_key),
             )
             .join(models.Document, models.Document.tender_id == models.Tender.id)
             .join(
@@ -251,6 +281,7 @@ def list_uploaded() -> list[TenderDocumentSummary]:
             documents=r[3],
             chunks=r[4],
             pages=int(r[5] or 0),
+            document_url=f"/api/documents/raw/{r[6]}" if r[6] else None,
         )
         for r in rows
     ]

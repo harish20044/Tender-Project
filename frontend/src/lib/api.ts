@@ -117,6 +117,7 @@ export interface IngestedTender {
   documents: number;
   chunks: number;
   pages: number;
+  document_url: string | null;
 }
 
 export interface Fact {
@@ -255,4 +256,36 @@ export function seedCorpus(): Promise<{
   return post<{ created: number; updated: number; embedded: number; total: number }>(
     "/api/similarity/seed",
   );
+}
+
+export function correctFact(
+  tenderId: string,
+  factKey: string,
+  value: unknown,
+): Promise<Fact> {
+  return patchJson<Fact>(`/api/decisions/${tenderId}/facts/${factKey}`, {
+    value,
+    corrected_by: "analyst",
+  });
+}
+
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    let detail = `The API returned ${response.status}.`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      if (payload.detail) detail = payload.detail;
+    } catch {
+      // Not JSON; the status is all there is.
+    }
+    throw new Error(detail);
+  }
+
+  return (await response.json()) as T;
 }

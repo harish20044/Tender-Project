@@ -82,7 +82,7 @@ export function Sidebar() {
       <div className="border-t border-rule px-5 py-3">
         <p className="label">Status</p>
         <p className="mt-1 text-xs text-ink-faint">
-          Every screen but Workspace runs against the live API.
+          Every screen runs against the live API.
         </p>
       </div>
     </aside>

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -115,6 +116,56 @@ def get_facts(tender_id: str) -> ExtractResponse:
             for key, entry in facts.items()
         ],
     )
+
+
+class CorrectionRequest(BaseModel):
+    value: Any
+    corrected_by: str | None = None
+
+
+@router.patch("/{tender_id}/facts/{fact_key:path}", response_model=FactItem)
+def correct_fact(
+    tender_id: str,
+    fact_key: str,
+    correction: Annotated[CorrectionRequest, Body()],
+) -> FactItem:
+    """Override an extracted value by hand.
+
+    The original is kept rather than overwritten: a correction is the only
+    honest signal this system gets about how well extraction is doing, and
+    losing what the model actually said would throw that away. Everything
+    downstream reads the corrected value in preference, so a fixed figure
+    changes the decision the next time it is scored.
+    """
+    with session_scope() as session:
+        row = session.scalar(
+            select(models.ExtractedFact).where(
+                models.ExtractedFact.tender_id == tender_id,
+                models.ExtractedFact.key == fact_key,
+            )
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"No extracted fact {fact_key!r}.")
+
+        row.corrected_value = {"value": correction.value}
+        row.corrected_by = correction.corrected_by or "analyst"
+        row.corrected_at = datetime.now(UTC)
+
+        logger.info(
+            "fact_corrected",
+            tender_id=tender_id,
+            key=fact_key,
+            was=(row.value or {}).get("value"),
+            now=correction.value,
+        )
+        return FactItem(
+            key=row.key,
+            value=correction.value,
+            unit=row.unit,
+            confidence=row.confidence,
+            page=row.page,
+            quote=row.quote,
+        )
 
 
 @router.post("/{tender_id}", response_model=DecisionResponse)
