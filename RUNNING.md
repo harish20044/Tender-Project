@@ -83,17 +83,66 @@ docker compose exec api python scripts/scrape_tenders.py --pages 12
 ```
 
 Run it again whenever you want fresher notices; the portal listing turns over
-through the day. Results are written to `data/cache/`, which is mounted from
-the host, so a scrape run inside or outside the container is visible to both.
+through the day. Results go into the `tenders` table, so a scrape run inside
+or outside the container is visible to both.
+
+### Analysing a tender
+
+The listing is only the notice. To analyse an actual pack, upload its PDF —
+on the **Upload** screen, or over the API:
+
+```bash
+curl -X POST http://localhost:8001/api/documents/upload \
+  -F "file=@tender.pdf;type=application/pdf" \
+  -F "reference=NHAI/RO-BPL/2026-27/EPC-14"
+```
+
+That parses the document page by page, splits it into passages that keep
+their page range, and embeds them. The response carries a `tender_id`, which
+everything below is keyed on.
+
+```bash
+# Ask it anything, answered from its own pages with citations
+curl -X POST "http://localhost:8001/api/documents/$TENDER_ID/ask" \
+  --get --data-urlencode "question=What is the earnest money deposit?"
+
+# Answer the fifty standard questions and cache them
+curl -X POST "http://localhost:8001/api/documents/$TENDER_ID/faqs"
+
+# Read the decision-relevant figures out of the document
+curl -X POST "http://localhost:8001/api/decisions/$TENDER_ID/extract"
+
+# Score the bid: gates, risks, counterfactuals and a narrated rationale
+curl -X POST "http://localhost:8001/api/decisions/$TENDER_ID"
+
+# Compare against past tenders (seed the corpus once first)
+curl -X POST "http://localhost:8001/api/similarity/seed"
+curl "http://localhost:8001/api/similarity/$TENDER_ID"
+```
+
+The FAQ run answers fifty questions one at a time and is paced by the Groq
+rate limit, so it takes a few minutes; the answers are cached against the
+tender afterwards.
 
 ### Downloading tender documents
 
-The scraped notices point at tender packs that the portal keeps behind a
-CAPTCHA gate. `scripts/download_documents.py` drives a real Chrome through
-that gate — the CAPTCHA is read by Tesseract — saves each pack as a ZIP, and
-uploads it to Supabase Storage, recording the URL on the tender's row in the
-cache. Because it needs Chrome and Tesseract, run it on the host rather than
-inside the API container.
+**This does not work end to end yet — upload packs by hand instead.**
+
+CPPP publishes notices; it does not host the files. Past its CAPTCHA, the
+detail page links out to whichever portal the issuing department runs — NIC's
+GePNIC for most, a bespoke site for some — and that is where the documents
+are. `scripts/download_documents.py` drives a real Chrome through the whole
+chain: it opens the tender from the listing (stored detail URLs are bound to
+the session that made them and return "Invalid Url" on their own), reads the
+CAPTCHA with Tesseract, follows the outbound link, and finds the download.
+
+What is not reliable is the last step. The department portal's download link
+is a session-scoped framework component that the browser declines to save and
+that a plain HTTP fetch, even carrying the browser's cookies, answers with
+HTML instead of the file.
+
+Because it needs Chrome and Tesseract, run it on the host rather than inside
+the API container.
 
 One-time setup:
 

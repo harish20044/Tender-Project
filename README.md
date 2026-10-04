@@ -26,18 +26,17 @@ Every extracted fact carries the page and bounding box it came from, so any numb
 
 | Concern | Choice | Why |
 |---|---|---|
-| Parsing | Docling, pdfplumber fallback | Handles multi-page, merged-cell Bill of Quantities tables that line-based extractors miss |
-| OCR | Tesseract, auto-routed per page | Tenders from government portals are frequently scanned images with no text layer |
+| Parsing | PyMuPDF | Fast, and returns per-block geometry, which is what lets a citation point at a region rather than a page |
+| OCR | Tesseract | Reads the portal's CAPTCHA today. Pages with no text layer are detected and reported, but not yet routed through OCR |
 | Embeddings | Jina `jina-embeddings-v3` | Hosted; no GPU available in this deployment |
-| Reranking | Jina `jina-reranker-v2-base-multilingual` | Cross-encoder reranking is the single largest retrieval quality gain |
+| Reranking | Jina `jina-reranker-v2-base-multilingual` | Client implemented; retrieval currently fuses dense and lexical rankings without it |
 | Vector store | pgvector, via Supabase | One database, real metadata filtering, transactional with the facts table |
 | Generation | Groq, GPT-OSS 120B | Fast enough to fan out all 50 FAQs per document in parallel at ingest |
-| Orchestration | LangGraph | Explicit state machine with checkpointing for the decision agent |
 | Queue | Celery + Redis | A 500-page tender cannot be parsed inside an HTTP request |
 | Object storage | Supabase Storage (S3-compatible) | Source PDFs |
 | API | FastAPI + Pydantic, Alembic | |
-| Auth | Supabase Auth | Roles (Analyst, Manager, Admin) live in each user's server-set app_metadata |
-| Frontend | React, TypeScript, Vite, Tailwind, pdf.js | |
+| Auth | Supabase Auth | Schema and roles exist; JWT verification is not wired up yet |
+| Frontend | React, TypeScript, Vite, Tailwind | |
 
 The AI layer is entirely hosted, so tender text leaves the machine. That is a deliberate trade-off given no local GPU. All model calls sit behind a provider interface, so a self-hosted mode can be added later without touching calling code.
 
@@ -141,6 +140,25 @@ docs/             architecture and decision records
 
 ## Status
 
-Under active development. Current phase: project scaffold.
+All four objectives run end to end against the live stack.
 
-Known open item: the historical corpus for tender comparison does not exist yet and is being assembled manually. Until it has enough density, the comparison feature reports low confidence rather than presenting weak matches as strong ones.
+| Capability | State |
+|---|---|
+| Portal listing scraper | Working. Writes straight to the `tenders` table; a scheduled task refreshes it. |
+| Upload and ingest | Working. PDF → per-page parse → chunks that keep their page range → Jina embeddings in pgvector. |
+| Question answering | Working. Hybrid retrieval (pgvector cosine + Postgres full text, fused by reciprocal rank), answered from retrieved passages only, with citations. |
+| The 50 standard FAQs | Working, cached per tender. |
+| Fact extraction | Working. 22 decision-relevant figures with the page and sentence each came from. |
+| Bid / No-Bid decision | Working. Nine gates, deterministic, with a risk register and counterfactuals. |
+| Comparison against past tenders | Working. Scope similarity, reissue detection and structural matches, over a corpus seeded from real scraped tenders. |
+| Workspace screen | Specification only. |
+
+### What is honestly not done
+
+**Document packs are not downloaded from the portal.** CPPP publishes notices but does not host the files: past its CAPTCHA the detail page links out to whichever portal the issuing department runs, and those links are bound to the browser session that produced them. The chain is implemented as far as the department portal, and the CAPTCHA reader passes the gate, but the final fetch is not reliable. Documents are uploaded by hand in the meantime, which is how an estimator works anyway — they already have the pack.
+
+**Authentication is schema only.** `users`, roles and the activity tables exist and are migrated, but nothing verifies a Supabase JWT or enforces a role yet.
+
+**The historical corpus is listing-level.** It is seeded from real scraped notices, so it carries titles, authorities, categories and dates, but not awarded values or bidder counts — those only exist after award. Comparison works on scope and wording rather than on outcomes.
+
+**Page attribution is chunk-level.** A citation points at the page range of the passage a fact came from, not the exact bounding box. The parser captures block geometry, so narrowing this is a small change, but today a citation says "pp. 1-3" where the schema can hold a precise box.
