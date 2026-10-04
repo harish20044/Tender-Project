@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import decisions, documents, tenders
+from app.api.routes import decisions, documents, similarity, tenders
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.tls import install_system_trust
@@ -63,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(tenders.router)
     app.include_router(documents.router)
     app.include_router(decisions.router)
+    app.include_router(similarity.router)
 
     return app
 

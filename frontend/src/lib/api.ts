@@ -220,3 +220,39 @@ export function computeDecision(tenderId: string): Promise<DecisionResult> {
 export function fetchDecision(tenderId: string): Promise<DecisionResult | null> {
   return request<DecisionResult | null>(`/api/decisions/${tenderId}`);
 }
+
+export interface SimilarMatch {
+  reference: string | null;
+  title: string;
+  authority: string | null;
+  category: string | null;
+  published: string | null;
+  estimated_value: number | null;
+  scope_similarity: number;
+  reissue_likelihood: number;
+  same_authority: boolean;
+  same_category: boolean;
+  is_probable_reissue: boolean;
+  why: string;
+}
+
+export interface SimilarResult {
+  tender_id: string;
+  corpus_size: number;
+  matches: SimilarMatch[];
+}
+
+export function fetchSimilar(tenderId: string, limit = 10): Promise<SimilarResult> {
+  return request<SimilarResult>(`/api/similarity/${tenderId}?limit=${limit}`);
+}
+
+export function seedCorpus(): Promise<{
+  created: number;
+  updated: number;
+  embedded: number;
+  total: number;
+}> {
+  return post<{ created: number; updated: number; embedded: number; total: number }>(
+    "/api/similarity/seed",
+  );
+}
