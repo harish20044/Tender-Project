@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     supabase_bucket: str = "tender-documents"
     # Public buckets serve stable URLs; private ones hand out signed URLs.
     supabase_public_bucket: bool = True
+    # When false, a request without a token is served anonymously rather than
+    # rejected, and whatever it does simply goes unattributed. Tokens are
+    # still verified and roles still enforced whenever one *is* presented, so
+    # this loosens who may call, never what a caller is trusted to be.
+    # Turn it on once every client signs in.
+    auth_required: bool = False
 
     # --- Portal document downloads ------------------------------------------
     # The downloader drives a real Chrome and reads the portal's CAPTCHA with

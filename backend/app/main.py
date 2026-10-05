@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import decisions, documents, similarity, tenders
+from app.api.routes import auth, decisions, documents, similarity, tenders
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.tls import install_system_trust
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    app.include_router(auth.router)
     app.include_router(tenders.router)
     app.include_router(documents.router)
     app.include_router(decisions.router)

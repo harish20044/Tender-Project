@@ -6,14 +6,15 @@ import time
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from app.core.auth import CurrentUser, Principal, record_activity, record_question, require
 from app.core.logging import get_logger
 from app.db import models
 from app.db.session import session_scope
-from app.pipeline.answer import answer_question
+from app.pipeline.answer import Answer, answer_question
 from app.pipeline.ingest import ingest_pdf
 from app.pipeline.retrieve import retrieve
 from app.providers.groq import GroqChatProvider
@@ -75,7 +76,9 @@ class FaqRunResponse(BaseModel):
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
+    request: Request,
     file: Annotated[UploadFile, File(description="The tender PDF")],
+    user: Principal = require(models.UserRole.ESTIMATOR, models.UserRole.MANAGER),
     reference: Annotated[str | None, Form()] = None,
     title: Annotated[str | None, Form()] = None,
 ) -> UploadResponse:
@@ -106,6 +109,14 @@ async def upload_document(
         logger.error("upload_failed", filename=filename, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Could not ingest the PDF: {exc}") from exc
 
+    record_activity(
+        user,
+        models.ActivityAction.VIEW_TENDER,
+        tender_id=result.tender_id,
+        request=request,
+        extra={"uploaded": filename, "pages": result.pages},
+    )
+
     return UploadResponse(
         tender_id=result.tender_id,
         document_id=result.document_id,
@@ -120,7 +131,7 @@ async def upload_document(
     )
 
 
-async def _answer(question: str, tender_id: str, limit: int) -> tuple[object, int]:
+async def _answer(question: str, tender_id: str, limit: int) -> tuple[Answer, int]:
     started = time.monotonic()
     passages = await retrieve(question, tender_id=tender_id, embedder=JinaProvider(), limit=limit)
     answer = await answer_question(question, passages, chat=GroqChatProvider())
@@ -130,17 +141,35 @@ async def _answer(question: str, tender_id: str, limit: int) -> tuple[object, in
 @router.post("/{tender_id}/ask", response_model=AnswerResponse)
 async def ask(
     tender_id: str,
+    request: Request,
     question: Annotated[str, Query(min_length=3, description="A question about this tender")],
+    user: Principal = require(
+        models.UserRole.VIEWER, models.UserRole.ESTIMATOR, models.UserRole.MANAGER
+    ),
     limit: Annotated[int, Query(ge=1, le=20)] = 8,
 ) -> AnswerResponse:
     """Answer a free-text question from the tender's own documents."""
     answer, elapsed = await _answer(question, tender_id, limit)
+
+    # Logged so the questions people actually ask can be found later: one
+    # asked repeatedly across users is the signal for promoting it into the
+    # standard set.
+    record_question(
+        user,
+        question,
+        tender_id=tender_id,
+        source=models.QuestionSource.FREE_SEARCH,
+        answerable=answer.is_answerable,
+        confidence=answer.confidence,
+        response_ms=elapsed,
+    )
+    record_activity(user, models.ActivityAction.ASK_QUESTION, tender_id=tender_id, request=request)
     return AnswerResponse(
         question=question,
-        answer=answer.text,  # type: ignore[attr-defined]
-        is_answerable=answer.is_answerable,  # type: ignore[attr-defined]
-        confidence=answer.confidence,  # type: ignore[attr-defined]
-        citations=[Citation(**c) for c in answer.citations],  # type: ignore[attr-defined]
+        answer=answer.text,
+        is_answerable=answer.is_answerable,
+        confidence=answer.confidence,
+        citations=[Citation(**c) for c in answer.citations],
         elapsed_ms=elapsed,
     )
 
@@ -148,6 +177,8 @@ async def ask(
 @router.post("/{tender_id}/faqs", response_model=FaqRunResponse)
 async def run_faqs(
     tender_id: str,
+    request: Request,
+    user: Principal = require(models.UserRole.ESTIMATOR, models.UserRole.MANAGER),
     only: Annotated[str | None, Query(description="Answer one FAQ key only")] = None,
     category: Annotated[str | None, Query(description="Limit to one category")] = None,
 ) -> FaqRunResponse:
@@ -176,10 +207,10 @@ async def run_faqs(
                 key=faq.key,
                 question=faq.question,
                 category=faq.category,
-                answer=answer.text,  # type: ignore[attr-defined]
-                is_answerable=answer.is_answerable,  # type: ignore[attr-defined]
-                confidence=answer.confidence,  # type: ignore[attr-defined]
-                citations=[Citation(**c) for c in answer.citations],  # type: ignore[attr-defined]
+                answer=answer.text,
+                is_answerable=answer.is_answerable,
+                confidence=answer.confidence,
+                citations=[Citation(**c) for c in answer.citations],
             )
         )
 
@@ -199,6 +230,7 @@ async def run_faqs(
             existing.confidence = items[-1].confidence
             existing.citations = [c.model_dump() for c in items[-1].citations]
 
+    record_activity(user, models.ActivityAction.VIEW_FAQ, tender_id=tender_id, request=request)
     answered = sum(1 for i in items if i.is_answerable)
     return FaqRunResponse(
         tender_id=tender_id,
@@ -247,7 +279,7 @@ class TenderDocumentSummary(BaseModel):
 
 
 @router.get("", response_model=list[TenderDocumentSummary])
-def list_uploaded() -> list[TenderDocumentSummary]:
+def list_uploaded(user: CurrentUser) -> list[TenderDocumentSummary]:
     """Tenders that have documents ingested and are therefore questionable."""
     with session_scope() as session:
         rows = session.execute(

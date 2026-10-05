@@ -66,7 +66,12 @@ def create_celery() -> Celery:
 
     # Task modules are imported for their registration side effect. Kept in one
     # place so a worker and the API agree on what exists.
-    app.autodiscover_tasks(["app.workers"], force=True)
+    #
+    # Not forced: forcing discovery runs it inside this function, so a task
+    # module importing `celery_app` from here finds the module still
+    # initialising and fails with a circular import. Left lazy, Celery
+    # discovers on worker start, by which point this module is complete.
+    app.autodiscover_tasks(["app.workers"])
 
     return app
 

@@ -31,6 +31,9 @@ services:
       # The repository layout the default infers from does not exist here, so
       # the data directory is named explicitly and mounted below.
       DATA_DIR: /app/data
+      # Uploaded documents belong in the mounted volume; the .env default is a
+      # path inside the container that does not survive being recreated.
+      STORAGE_PATH: /app/data/documents
     depends_on:
       redis:
         condition: service_healthy
@@ -39,7 +42,16 @@ services:
       # Scraped listings, shared with the host so a scrape run either side is
       # visible to the other.
       - ./data:/app/data
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+      # This network terminates TLS with a corporate proxy whose root CA the
+      # image does not carry, so every outbound HTTPS call — Supabase, Groq,
+      # Jina — fails to verify. Mounting it here and refreshing the trust
+      # store at start keeps verification on, where the usual workaround is
+      # to disable it. The file is environment-specific, not part of the
+      # project, which is why it is mounted rather than baked into the image.
+      - ./infra/certs:/usr/local/share/ca-certificates/extra:ro
+    command: >
+      sh -c "update-ca-certificates >/dev/null 2>&1;
+             uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)\""]
       interval: 10s
@@ -54,12 +66,20 @@ services:
     env_file: .env
     environment:
       DATA_DIR: /app/data
+      STORAGE_PATH: /app/data/documents
     depends_on:
       redis:
         condition: service_healthy
     volumes:
       - ./backend:/app
       - ./data:/app/data
+      # This network terminates TLS with a corporate proxy whose root CA the
+      # image does not carry, so every outbound HTTPS call — Supabase, Groq,
+      # Jina — fails to verify. Mounting it here and refreshing the trust
+      # store at start keeps verification on, where the usual workaround is
+      # to disable it. The file is environment-specific, not part of the
+      # project, which is why it is mounted rather than baked into the image.
+      - ./infra/certs:/usr/local/share/ca-certificates/extra:ro
     # Ingestion is IO- and CPU-bound with long tasks, so prefork with a small
     # concurrency beats a high thread count here. -B runs the beat scheduler
     # embedded in this same process (fine for one worker container; running
@@ -68,7 +88,9 @@ services:
     # installed, so AUTO_DOWNLOAD_DOCUMENTS only actually works when the
     # worker runs on the host (RUNNING.md's no-Docker route) — enabling it
     # here would just fail every download task.
-    command: celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=2 -B
+    command: >
+      sh -c "update-ca-certificates >/dev/null 2>&1;
+             celery -A app.workers.celery_app worker --loglevel=INFO --concurrency=2 -B"
 
   frontend:
     build:

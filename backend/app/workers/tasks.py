@@ -15,18 +15,21 @@ from __future__ import annotations
 
 import asyncio
 
+from celery import shared_task
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.corpus import ingest, store
-from app.corpus.captcha import configure_tesseract, tesseract_available
 from app.corpus.cppp import scrape
 from app.storage import StorageError, get_storage
-from app.workers.celery_app import celery_app
 
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="app.workers.scrape_tenders")  # type: ignore[untyped-decorator]
+# shared_task rather than @celery_app.task: binding to the app instance
+# would mean importing it from app.workers.celery_app, which imports this
+# module back during autodiscovery and leaves one of them half-built.
+@shared_task(name="app.workers.scrape_tenders")  # type: ignore[untyped-decorator]
 def scrape_tenders_task(listing: str = "high_value", max_pages: int = 10) -> dict[str, object]:
     tenders = scrape(listing, max_pages=max_pages)
     if not tenders:
@@ -46,7 +49,7 @@ def scrape_tenders_task(listing: str = "high_value", max_pages: int = 10) -> dic
     return result
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@shared_task(  # type: ignore[untyped-decorator]
     name="app.workers.download_tender_documents",
     autoretry_for=(Exception,),
     max_retries=1,
@@ -62,6 +65,16 @@ def download_tender_documents_task(reference: str) -> dict[str, object]:
     container, which does not have Chrome installed).
     """
     settings = get_settings()
+
+    # Imported here rather than at module scope: this is the only task that
+    # needs Pillow and Tesseract, they live in the optional `scraper` extra,
+    # and a worker that cannot download documents should still start and run
+    # the scrape schedule rather than refusing to boot at all.
+    try:
+        from app.corpus.captcha import configure_tesseract, tesseract_available
+    except ImportError as exc:
+        logger.error("download_task_unavailable", reference=reference, error=str(exc))
+        return {"reference": reference, "status": "scraper_extra_not_installed"}
 
     configure_tesseract()
     if not tesseract_available():

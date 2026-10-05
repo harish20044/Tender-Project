@@ -189,6 +189,31 @@ Application code is bind-mounted, so editing a file under `backend/` or
 docker compose up -d --build
 ```
 
+### On a network that inspects TLS
+
+Corporate networks commonly terminate TLS at a proxy and re-sign every
+certificate with their own root CA. That CA is installed on the machine, so
+the host works once `truststore` points Python at the OS store — but a
+container carries its own trust store, which has never heard of it, and every
+outbound call (Supabase, Groq, Jina) fails with `CERTIFICATE_VERIFY_FAILED`.
+
+Export the root your proxy presents and drop it in `infra/certs/`, which
+Compose mounts into the containers and refreshes the trust store from at
+start. Verification stays on; nothing is disabled.
+
+```bash
+# What is actually signing your connections?
+openssl s_client -connect <your-project>.supabase.co:443 -showcerts 2>/dev/null   | grep -E "^ *[0-9]+ s:|^ *i:"
+
+# Export that root from the Windows store by thumbprint
+certutil -store Root <THUMBPRINT> infra/certs/root.der
+openssl x509 -inform DER -in infra/certs/root.der -out infra/certs/root.crt
+rm infra/certs/root.der
+```
+
+The folder is gitignored: this is a property of the network you are on, not
+of the project, and nobody else's build should inherit it.
+
 ### Migrations
 
 The schema lives in `backend/app/db/models.py`; Alembic turns it into SQL.
