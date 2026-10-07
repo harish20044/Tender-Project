@@ -46,6 +46,11 @@ class Citation(BaseModel):
     page_from: int
     page_to: int
     citation: str
+    # The region of the page the quoted sentence was printed in, where the
+    # quote could be located. Points, then the same box as fractions of the
+    # page — the latter is what a viewer can actually draw.
+    bbox: list[float] | None = None
+    bbox_relative: list[float] | None = None
 
 
 class AnswerResponse(BaseModel):

@@ -26,6 +26,60 @@ function formatValue(fact: Fact): string {
   return String(fact.value ?? "—");
 }
 
+/** Most tender pages are A4 portrait. The map is a locator, not a preview, so
+ *  a fixed ratio is close enough for every page that is not a fold-out
+ *  drawing — and the exact rectangle is on the fact for anything that needs
+ *  it precisely. */
+const PAGE_ASPECT = 1 / 1.414;
+
+/**
+ * Where on the page a finding was read from.
+ *
+ * The citation already names the page; this says whereabouts on it, so an
+ * estimator opening a 300-page pack knows whether to look at the header, the
+ * middle of a clause list, or the signature block. Drawn from fractions of
+ * the page rather than points, because nothing here knows the page's size.
+ */
+function PageRegion({ region, page }: { region: number[]; page: number | null }) {
+  const clamp = (value: number | undefined) =>
+    typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+  const [x0, y0, x1, y1] = region;
+  const left = clamp(x0);
+  const top = clamp(y0);
+  // A one-line clause can be a couple of points tall, which rounds to an
+  // invisible sliver; floored so the marker is always findable.
+  const width = Math.max(0.04, clamp(x1) - left);
+  const height = Math.max(0.012, clamp(y1) - top);
+
+  return (
+    <div className="flex items-center gap-2">
+      <div
+        className="relative shrink-0 overflow-hidden rounded-sm border border-rule bg-surface"
+        style={{ width: 26, aspectRatio: String(PAGE_ASPECT) }}
+        role="img"
+        aria-label={
+          page
+            ? `Region of page ${page} this was read from`
+            : "Region of the page this was read from"
+        }
+      >
+        <span
+          className="absolute bg-accent/70"
+          style={{
+            left: `${left * 100}%`,
+            top: `${top * 100}%`,
+            width: `${width * 100}%`,
+            height: `${height * 100}%`,
+          }}
+        />
+      </div>
+      <span className="text-xs text-ink-faint">
+        {Math.round(top * 100)}% down the page
+      </span>
+    </div>
+  );
+}
+
 function FindingRow({
   fact,
   tenderId,
@@ -113,20 +167,25 @@ function FindingRow({
       )}
 
       {fact.page && (
-        <p className="text-xs text-ink-faint">
-          {documentUrl ? (
-            <a
-              href={`${documentUrl}#page=${fact.page}`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent underline-offset-2 hover:underline"
-            >
-              Open page {fact.page} in the source
-            </a>
-          ) : (
-            <>page {fact.page}</>
+        <div className="space-y-1.5">
+          <p className="text-xs text-ink-faint">
+            {documentUrl ? (
+              <a
+                href={`${documentUrl}#page=${fact.page}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent underline-offset-2 hover:underline"
+              >
+                Open page {fact.page} in the source
+              </a>
+            ) : (
+              <>page {fact.page}</>
+            )}
+          </p>
+          {fact.bbox_relative?.length === 4 && (
+            <PageRegion region={fact.bbox_relative} page={fact.page} />
           )}
-        </p>
+        </div>
       )}
     </div>
   );
@@ -166,9 +225,10 @@ export function WorkspacePage() {
         <p className="text-xs uppercase tracking-wider text-ink-faint">Analyse</p>
         <h1 className="text-2xl font-semibold text-ink">Workspace</h1>
         <p className="max-w-2xl text-sm text-ink-muted">
-          Every finding sits beside the sentence it was read from and the page it came
-          from. A value that looks wrong can be corrected here; the original is kept, and
-          the decision re-scores from the correction.
+          Every finding sits beside the sentence it was read from, the page it came from,
+          and whereabouts on that page it was printed. A value that looks wrong can be
+          corrected here; the original is kept, and the decision re-scores from the
+          correction.
         </p>
       </header>
 
@@ -223,6 +283,12 @@ export function WorkspacePage() {
                 {all.filter((f) => f.page).length}
               </p>
               <p className="text-xs text-ink-faint">traced to a page</p>
+            </div>
+            <div>
+              <p className="text-2xl font-semibold tabular-nums text-ink">
+                {all.filter((f) => f.bbox_relative?.length === 4).length}
+              </p>
+              <p className="text-xs text-ink-faint">traced to a region</p>
             </div>
           </div>
 

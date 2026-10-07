@@ -30,9 +30,12 @@ class FactItem(BaseModel):
     confidence: float = 0.0
     page: int | None = None
     # [x0, y0, x1, y1] in PDF points: the region of `page` the quote was
-    # printed in, for the viewer's highlight overlay. Null where the quote
-    # could not be located, or where the chunk predates block geometry.
+    # printed in. Null where the quote could not be located, or where the
+    # chunk predates block geometry.
     bbox: list[float] | None = None
+    # The same rectangle as fractions of the page, which is what the
+    # workspace's highlight overlay uses.
+    bbox_relative: list[float] | None = None
     quote: str | None = None
 
 
@@ -95,6 +98,7 @@ async def extract(tender_id: str) -> ExtractResponse:
                 confidence=f.confidence,
                 page=f.page,
                 bbox=f.bbox,
+                bbox_relative=f.bbox_relative,
                 quote=f.quote,
             )
             for f in facts
@@ -117,6 +121,7 @@ def get_facts(tender_id: str) -> ExtractResponse:
                 confidence=entry.get("confidence") or 0.0,
                 page=entry.get("page"),
                 bbox=entry.get("bbox"),
+                bbox_relative=entry.get("bbox_relative"),
                 quote=entry.get("quote"),
             )
             for key, entry in facts.items()
@@ -171,6 +176,7 @@ def correct_fact(
             confidence=row.confidence,
             page=row.page,
             bbox=row.bbox,
+            bbox_relative=row.bbox_relative,
             quote=row.quote,
         )
 

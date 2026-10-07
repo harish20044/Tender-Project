@@ -159,6 +159,10 @@ export interface Fact {
   confidence: number;
   page: number | null;
   quote: string | null;
+  /** [x0, y0, x1, y1] in PDF points, top-left origin. */
+  bbox: number[] | null;
+  /** The same rectangle as fractions of the page, for drawing it. */
+  bbox_relative: number[] | null;
 }
 
 export interface Gate {

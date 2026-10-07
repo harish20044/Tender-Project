@@ -58,6 +58,9 @@ class ExtractedFact:
     # printed in, so the interface can highlight it rather than only name the
     # page. None when the quote could not be located in a passage.
     bbox: list[float] | None = None
+    # The same box as fractions of the page, which is what a viewer that has
+    # drawn the page at some arbitrary size actually needs.
+    bbox_relative: list[float] | None = None
 
 
 def _group_query(group: str) -> str:
@@ -82,7 +85,7 @@ def _passage_block(passages: list[Passage]) -> str:
 
 def _page_for(
     quote: str | None, passages: list[Passage]
-) -> tuple[int | None, str | None, list[float] | None]:
+) -> tuple[int | None, str | None, list[float] | None, list[float] | None]:
     """Find which passage a quote actually came from, and where on the page.
 
     The model is asked for a page number, but it reads those off the headers
@@ -91,15 +94,18 @@ def _page_for(
     checkable rather than merely plausible.
     """
     if not quote:
-        return None, None, None
+        return None, None, None, None
     for passage in passages:
         page = passage.page_of(quote)
         if page is not None:
             # The page the quote sits on, not the first page of the passage's
             # range — a passage carrying a page break would otherwise cite the
             # wrong page for everything after it.
-            return page, passage.chunk_id, passage.bbox_of(quote)
-    return None, None, None
+            region = passage.region_of(quote)
+            if region is None:
+                return page, passage.chunk_id, None, None
+            return page, passage.chunk_id, region.bbox, region.relative
+    return None, None, None, None
 
 
 async def extract_group(
@@ -139,7 +145,7 @@ async def extract_group(
             continue
 
         quote = entry.get("quote")
-        page, chunk_id, bbox = _page_for(quote, passages)
+        page, chunk_id, bbox, bbox_relative = _page_for(quote, passages)
         if page is None:
             # Fall back to the model's own page claim, but only as a claim.
             reported = entry.get("page")
@@ -155,6 +161,7 @@ async def extract_group(
                 quote=quote,
                 source_chunk_id=chunk_id,
                 bbox=bbox,
+                bbox_relative=bbox_relative,
             )
         )
 
@@ -206,6 +213,7 @@ async def extract_tender(
             row.page = fact.page
             row.quote = fact.quote
             row.bbox = fact.bbox
+            row.bbox_relative = fact.bbox_relative
             row.source_chunk_id = uuid.UUID(fact.source_chunk_id) if fact.source_chunk_id else None
 
         session.get(models.Tender, tender_id).ingest_status = models.IngestStatus.COMPLETE  # type: ignore[union-attr]
@@ -227,6 +235,7 @@ def stored_facts(tender_id: str) -> dict[str, dict[str, Any]]:
                 "confidence": row.confidence,
                 "page": row.page,
                 "bbox": row.bbox,
+                "bbox_relative": row.bbox_relative,
                 "quote": row.quote,
                 "corrected": row.corrected_value is not None,
             }

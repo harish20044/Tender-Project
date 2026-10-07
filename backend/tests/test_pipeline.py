@@ -198,3 +198,60 @@ def test_chunks_prefer_to_break_at_page_boundaries() -> None:
     chunks = chunk_document(parsed)
 
     assert any(not chunk.spans_pages for chunk in chunks)
+
+
+class TestRegionGeometry:
+    """A quote resolving to a rectangle on the page it was printed on.
+
+    The page size travels with the box because a box in PDF points means
+    nothing to a viewer that has drawn the page at some arbitrary width, and
+    tender packs mix A4 portrait pages with A3 landscape drawings.
+    """
+
+    def _chunks(self) -> list:
+        from app.eval.golden import NHAI_BYPASS, render_pdf
+        from app.pipeline.chunk import chunk_document
+        from app.pipeline.parse import parse_pdf
+
+        return chunk_document(parse_pdf(render_pdf(NHAI_BYPASS)))
+
+    def _region(self, quote: str):
+        for chunk in self._chunks():
+            region = chunk.region_of(quote)
+            if region is not None:
+                return region
+        return None
+
+    def test_a_quote_resolves_to_a_region_on_its_own_page(self) -> None:
+        region = self._region("Liquidated Damages: Liquidated damages for delay")
+        assert region is not None
+        assert region.page == 4
+        assert region.page_width > 0 and region.page_height > 0
+
+    def test_distinct_clauses_get_distinct_regions(self) -> None:
+        damages = self._region("Liquidated Damages: Liquidated damages for delay")
+        arbitration = self._region("Dispute Resolution: Disputes shall first be referred")
+        assert damages is not None and arbitration is not None
+        # Same page, different places on it. A single box covering the whole
+        # page would satisfy "has a region" while telling nobody anything.
+        assert damages.page == arbitration.page
+        assert damages.bbox[1] != arbitration.bbox[1]
+
+    def test_relative_coordinates_are_fractions_of_the_page(self) -> None:
+        region = self._region("Estimated Contract Value")
+        assert region is not None
+        relative = region.relative
+        assert relative is not None
+        assert all(0.0 <= value <= 1.0 for value in relative)
+        # x0 < x1 and y0 < y1, or the rectangle is inside out.
+        assert relative[0] < relative[2]
+        assert relative[1] < relative[3]
+
+    def test_relative_is_none_without_a_page_size(self) -> None:
+        from app.pipeline.chunk import Region
+
+        region = Region(page=1, bbox=[0, 0, 10, 10], page_width=0.0, page_height=0.0)
+        assert region.relative is None
+
+    def test_a_quote_not_in_the_chunk_has_no_region(self) -> None:
+        assert self._region("this sentence appears in no tender anywhere") is None

@@ -349,7 +349,13 @@ class ExtractedFact(Base):
     # Provenance. A fact without a page is not citable and is treated as
     # unverified by the decision engine.
     page: Mapped[int | None] = mapped_column(Integer)
+    # [x0, y0, x1, y1] in PDF points, top-left origin, as the parser reports.
     bbox: Mapped[list[float] | None] = mapped_column(JSONB)
+    # The same rectangle as fractions of the page. Stored rather than derived
+    # because deriving it needs the page's size in points, which lives with
+    # the chunk and not the fact — and a viewer knows how large it has drawn
+    # the page, never how large the page is.
+    bbox_relative: Mapped[list[float] | None] = mapped_column(JSONB)
     source_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("chunks.id", ondelete="SET NULL")
     )

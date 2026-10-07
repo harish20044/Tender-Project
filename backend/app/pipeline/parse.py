@@ -35,6 +35,12 @@ class ParsedPage:
     number: int  # 1-based, as printed and as cited
     text: str
     blocks: list[TextBlock] = field(default_factory=list)
+    # The page's own size in PDF points. Carried because a block's bbox is
+    # meaningless without it: anything drawing a highlight has to know what
+    # the coordinates are a fraction of, and tender packs mix A4 portrait
+    # drawings with A3 landscape ones in the same document.
+    width: float = 0.0
+    height: float = 0.0
 
     @property
     def is_scanned(self) -> bool:
@@ -102,6 +108,8 @@ def parse_pdf(data: bytes) -> ParsedDocument:
                     number=index,
                     text="\n".join(block.text for block in blocks),
                     blocks=blocks,
+                    width=float(page.rect.width),
+                    height=float(page.rect.height),
                 )
             )
 

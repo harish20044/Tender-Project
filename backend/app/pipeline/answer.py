@@ -167,6 +167,10 @@ async def answer_question(
         passage = passages[index - 1]
         quoted = _quoted_from(body, passage)
         page = passage.page_of(quoted) if quoted else None
+        # Where the quote can be located, so can the region it was printed
+        # in — the same geometry the workspace draws for an extracted fact,
+        # so an answer and a finding cite the document the same way.
+        region = passage.region_of(quoted) if quoted else None
         citations.append(
             {
                 "marker": index,
@@ -176,6 +180,8 @@ async def answer_question(
                 "page_from": page or passage.page_from,
                 "page_to": page or passage.page_to,
                 "citation": f"{passage.filename} p.{page}" if page else passage.citation,
+                "bbox": region.bbox if region else None,
+                "bbox_relative": region.relative if region else None,
             }
         )
 

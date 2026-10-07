@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.db import models
 from app.db.session import session_scope
-from app.pipeline.chunk import offset_of, span_of, union_bbox
+from app.pipeline.chunk import Region, offset_of, span_of, union_bbox
 from app.providers.base import EmbeddingProvider, RerankProvider
 
 logger = get_logger(__name__)
@@ -79,12 +79,16 @@ class Passage:
         page = self.page_of(quote) if quote else None
         return f"{self.filename} p.{page}" if page else self.citation
 
-    def bbox_of(self, quote: str) -> list[float] | None:
-        """The region of the page a quote was printed in, or None.
+    def region_of(self, quote: str) -> Region | None:
+        """Where on the page a quote was printed, or None.
 
         Narrows a citation from a page to a rectangle. Restricted to blocks
         on the page the quote starts on, so a quote crossing a page break
         does not union boxes from two pages into a meaningless one.
+
+        Rows written before the page size was recorded carry seven numbers
+        rather than nine; they still yield a box, just without the size
+        needed to express it as a fraction of the page.
         """
         if not quote or not self.block_spans:
             return None
@@ -92,12 +96,26 @@ class Passage:
         if start < 0:
             return None
         page = self.page_at(start)
-        covered = [
-            (span[3], span[4], span[5], span[6])
+        covering = [
+            span
             for span in self.block_spans
-            if len(span) == 7 and int(span[2]) == page and span[0] < end and start < span[1]
+            if len(span) >= 7 and int(span[2]) == page and span[0] < end and start < span[1]
         ]
-        return union_bbox(covered)
+        box = union_bbox([(s[3], s[4], s[5], s[6]) for s in covering])
+        if box is None:
+            return None
+        first = covering[0]
+        return Region(
+            page=page,
+            bbox=box,
+            page_width=float(first[7]) if len(first) >= 9 else 0.0,
+            page_height=float(first[8]) if len(first) >= 9 else 0.0,
+        )
+
+    def bbox_of(self, quote: str) -> list[float] | None:
+        """Just the rectangle, for callers that do not need the page size."""
+        region = self.region_of(quote)
+        return region.bbox if region else None
 
 
 def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passage]:

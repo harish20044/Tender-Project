@@ -80,9 +80,47 @@ class BlockSpan:
     end: int
     page: int
     bbox: tuple[float, float, float, float]
+    # The page's own size in PDF points. Carried alongside the box because
+    # the box means nothing without it: a highlight has to know what the
+    # coordinates are a fraction of, and a pack can mix A4 portrait pages
+    # with A3 landscape drawings in one document.
+    page_width: float = 0.0
+    page_height: float = 0.0
 
     def overlaps(self, start: int, end: int) -> bool:
         return self.start < end and start < self.end
+
+
+@dataclass(frozen=True)
+class Region:
+    """Where a quote sits: which page, and where on it.
+
+    The page size travels with the box rather than being looked up
+    separately, because the two are only meaningful together and fetching
+    them by different routes is how they come to disagree.
+    """
+
+    page: int
+    bbox: list[float]
+    page_width: float
+    page_height: float
+
+    @property
+    def relative(self) -> list[float] | None:
+        """The box as fractions of the page, or None if the size is unknown.
+
+        What a highlight overlay actually wants: the renderer knows how big
+        it has drawn the page, not how big the page is in points.
+        """
+        if self.page_width <= 0 or self.page_height <= 0:
+            return None
+        x0, y0, x1, y1 = self.bbox
+        return [
+            x0 / self.page_width,
+            y0 / self.page_height,
+            x1 / self.page_width,
+            y1 / self.page_height,
+        ]
 
 
 def union_bbox(boxes: list[tuple[float, float, float, float]]) -> list[float] | None:
@@ -144,8 +182,8 @@ class Chunk:
         offset = offset_of(quote, self.content)
         return self.page_at(offset) if offset >= 0 else None
 
-    def bbox_of(self, quote: str) -> list[float] | None:
-        """The region of the page a quote was printed in, or None.
+    def region_of(self, quote: str) -> Region | None:
+        """Where on the page a quote was printed, or None.
 
         Restricted to blocks on the page the quote *starts* on. A quote
         running across a page break would otherwise union boxes from two
@@ -158,8 +196,22 @@ class Chunk:
         if start < 0:
             return None
         page = self.page_at(start)
-        covered = [b.bbox for b in self.blocks if b.page == page and b.overlaps(start, end)]
-        return union_bbox(covered)
+        covering = [b for b in self.blocks if b.page == page and b.overlaps(start, end)]
+        box = union_bbox([b.bbox for b in covering])
+        if box is None:
+            return None
+        first = covering[0]
+        return Region(
+            page=page,
+            bbox=box,
+            page_width=first.page_width,
+            page_height=first.page_height,
+        )
+
+    def bbox_of(self, quote: str) -> list[float] | None:
+        """Just the rectangle, for callers that do not need the page size."""
+        region = self.region_of(quote)
+        return region.bbox if region else None
 
 
 def _budget_chars() -> tuple[int, int]:
@@ -219,6 +271,8 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
                 end=min(len(content), span.end - shift),
                 page=span.page,
                 bbox=span.bbox,
+                page_width=span.page_width,
+                page_height=span.page_height,
             )
             for span in spans
             if span.end - shift > 0 and span.start - shift < len(content)
@@ -250,6 +304,8 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
                     end=min(len(buffer), span.end - tail_start),
                     page=span.page,
                     bbox=span.bbox,
+                    page_width=span.page_width,
+                    page_height=span.page_height,
                 )
                 for span in adjusted_spans
                 if span.end > tail_start
@@ -291,6 +347,8 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
                     end=len(candidate),
                     page=page.number,
                     bbox=block.bbox,
+                    page_width=page.width,
+                    page_height=page.height,
                 )
             )
             buffer = candidate

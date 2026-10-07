@@ -177,7 +177,15 @@ async def ingest_pdf(
                     page_offsets=[[page, offset] for page, offset in chunk.page_offsets],
                     bbox=chunk.bbox,
                     block_spans=[
-                        [span.start, span.end, span.page, *span.bbox] for span in chunk.blocks
+                        [
+                            span.start,
+                            span.end,
+                            span.page,
+                            *span.bbox,
+                            span.page_width,
+                            span.page_height,
+                        ]
+                        for span in chunk.blocks
                     ],
                     section_path=chunk.section_path,
                     is_table=chunk.is_table,
