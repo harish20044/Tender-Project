@@ -69,6 +69,13 @@ _PORTAL_LABELS = {
     "Date of Completion/Completion Period in Days": "completion_date",
 }
 
+# The results page states how many awards matched. It is the only reliable
+# sign that the search actually ran: the search form, CAPTCHA and all, stays
+# on the page above the results, so "is the CAPTCHA still showing?" is true
+# even on success and cannot distinguish a rejected answer from a search that
+# legitimately matched nothing.
+_RESULT_TOTAL = re.compile(r"total\s+aocs?\s*:?\s*([\d,]+)", re.I)
+
 _TAG = re.compile(r"<[^>]+>")
 _CELL = re.compile(r"<td[^>]*>(.*?)</td>", re.S | re.I)
 _WS = re.compile(r"\s+")
@@ -333,10 +340,32 @@ class AwardScraper:
         return True
 
     def _captcha_still_showing(self) -> bool:
+        """Whether a page is still asking for a CAPTCHA.
+
+        Meaningful on a detail page, which shows nothing but the CAPTCHA
+        until it is answered. Not meaningful on the search page, where the
+        form stays above the results — use :meth:`_result_total` there.
+        """
         from selenium.webdriver.common.by import By
 
         body = self._driver.find_element(By.TAG_NAME, "body").text.lower()
         return "what code is in the image" in body or "enter the characters" in body
+
+    def _result_total(self) -> int | None:
+        """How many awards the search reported, or None if it never ran.
+
+        None means the CAPTCHA was not accepted, so the results were never
+        rendered. Zero means the search ran and matched nothing, which is a
+        finished answer and not something to retry — telling the two apart is
+        what stops an unmatched keyword burning the whole attempt budget.
+        """
+        from selenium.webdriver.common.by import By
+
+        body = self._driver.find_element(By.TAG_NAME, "body").text
+        match = _RESULT_TOTAL.search(body)
+        if match is None:
+            return None
+        return int(match.group(1).replace(",", ""))
 
     # -- search ----------------------------------------------------------- #
 
@@ -377,18 +406,26 @@ class AwardScraper:
                 if not self._answer_captcha():
                     continue
 
+                total = self._result_total()
+                if total is None:
+                    # The CAPTCHA was rejected, so the search never ran.
+                    continue
+
                 links = [
                     element.get_attribute("href")
                     for element in self._driver.find_elements(By.TAG_NAME, "a")
                     if "aocfullview" in (element.get_attribute("href") or "")
                 ]
                 if links:
-                    logger.info("award_search_ok", attempts=attempt, results=len(links))
+                    logger.info(
+                        "award_search_ok", attempts=attempt, results=len(links), matched=total
+                    )
                     return [link for link in links if link]
 
-                if not self._captcha_still_showing():
-                    logger.info("award_search_empty", attempts=attempt)
-                    return []
+                # The search ran and found nothing. Retrying only spends
+                # CAPTCHAs on a question already answered.
+                logger.info("award_search_empty", attempts=attempt, matched=total)
+                return []
             except Exception as exc:
                 logger.warning(
                     "award_search_attempt_failed",

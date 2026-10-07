@@ -223,3 +223,52 @@ class TestRestartBudget:
         from app.corpus.awards import AwardScraper
 
         assert AwardScraper(max_session_restarts=-5)._max_session_restarts == 0
+
+
+class TestResultTotalParsing:
+    """Telling 'the search found nothing' from 'the CAPTCHA was refused'.
+
+    The search form stays on the results page, CAPTCHA and all, so asking
+    "is the CAPTCHA still showing?" is true even on success. It cannot tell
+    a rejected answer from a search that legitimately matched nothing, and a
+    keyword matching nothing therefore burned the entire attempt budget —
+    about six minutes per keyword — before reporting the wrong reason.
+
+    The results count is the honest signal: absent means the search never
+    ran, zero means it ran and matched nothing.
+    """
+
+    def test_reads_the_count(self) -> None:
+        from app.corpus.awards import _RESULT_TOTAL
+
+        match = _RESULT_TOTAL.search("Total AOCs : 55200 « Previous 1 2 3")
+        assert match is not None
+        assert int(match.group(1).replace(",", "")) == 55200
+
+    def test_reads_a_grouped_count(self) -> None:
+        from app.corpus.awards import _RESULT_TOTAL
+
+        match = _RESULT_TOTAL.search("Total AOCs: 1,234")
+        assert match is not None
+        assert int(match.group(1).replace(",", "")) == 1234
+
+    def test_zero_is_a_real_answer_not_an_absence(self) -> None:
+        from app.corpus.awards import _RESULT_TOTAL
+
+        match = _RESULT_TOTAL.search("Total AOC : 0")
+        assert match is not None
+        assert int(match.group(1)) == 0
+
+    def test_singular_and_spacing_variants(self) -> None:
+        from app.corpus.awards import _RESULT_TOTAL
+
+        for text in ("Total AOC : 7", "total aocs:7", "Total  AOCs   :  7"):
+            match = _RESULT_TOTAL.search(text)
+            assert match is not None, text
+            assert int(match.group(1)) == 7
+
+    def test_absent_on_a_page_that_never_ran_the_search(self) -> None:
+        from app.corpus.awards import _RESULT_TOTAL
+
+        page = "What code is in the image? Enter the characters shown in the image."
+        assert _RESULT_TOTAL.search(page) is None
