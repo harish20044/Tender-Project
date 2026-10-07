@@ -153,6 +153,47 @@ All four objectives run end to end against the live stack.
 | Comparison against past tenders | Working. Scope similarity, reissue detection and structural matches, over a corpus seeded from real scraped tenders. |
 | Workspace screen | Working. Findings beside their source sentence, correctable in place. |
 | Sign-in and roles | Working. Tokens verified against Supabase's public keys; every route protected by default. |
+| Evaluation | Working. A golden set scored through the production pipeline, with thresholds that fail the run. |
+
+---
+
+## Measuring it
+
+Accuracy claims about extraction are worth nothing unasserted, so there is a
+golden set with known answers and a harness that scores against it:
+
+```bash
+python scripts/evaluate.py                      # the table below
+python scripts/evaluate.py --json runs/today.json
+```
+
+Three rates, because they fail for different reasons and have opposite
+remedies:
+
+| Rate | What it catches | Last run |
+|---|---|---|
+| Value accuracy | Right number, right unit — crore and lakh converted to rupees, months to days | 22/22 |
+| Page accuracy | The citation points at the page the value is actually on | 22/22 |
+| Abstention | A question the document does not answer is declined, not invented | 3/3 |
+
+Precision is reported beside accuracy deliberately: a system that answers
+nothing is perfectly precise and useless, and one that guesses freely is the
+reverse. A null counts as an honest abstention and is penalised in accuracy
+only.
+
+The harness runs the real ingest, retrieval and extraction path rather than
+calling the model directly — a prompt-level test would have missed the bug
+where retrieval truncated passages below the chunk size and "liquidated
+damages" came back as *not stated*. It needs the database and both provider
+keys and spends real tokens, which is why it is a script and not part of
+`pytest`. `scripts/evaluate.py` exits non-zero below its thresholds, so it
+can gate a release.
+
+The honest limitation: the golden document is one this project generates, so
+its figures are written in the forms Indian tenders use but its layout is far
+cleaner than a scanned pack. It measures unit conversion, page attribution
+and abstention; it does not prove performance on a real scanned document.
+`GoldenCase` takes an annotated real pack as soon as there is one.
 
 ### What is honestly not done
 
