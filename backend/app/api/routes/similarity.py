@@ -23,6 +23,14 @@ class MatchItem(BaseModel):
     category: str | None
     published: str | None
     estimated_value: float | None
+    # Outcome fields, null unless the award has been published and scraped.
+    awarded_value: float | None = None
+    winning_bidder: str | None = None
+    bidder_count: int | None = None
+    awarded: str | None = None
+    # The portal publishes no currency for an awarded figure, so the
+    # interface must not present it as a checked rupee amount.
+    awarded_value_is_unverified: bool = True
     scope_similarity: float
     reissue_likelihood: float
     same_authority: bool

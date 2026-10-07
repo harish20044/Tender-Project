@@ -43,6 +43,15 @@ class Match:
     category: str | None
     published: str | None
     estimated_value: float | None
+    # The outcome half, where the corpus has it. A match that was actually
+    # awarded is worth more than one that merely resembles: it says what the
+    # market paid and how much competition turned up. Null where the award
+    # has not been published, which is most of the corpus — see
+    # `app/corpus/awards` for how these are gathered.
+    awarded_value: float | None
+    winning_bidder: str | None
+    bidder_count: int | None
+    awarded: str | None
     scope_similarity: float
     reissue_likelihood: float
     same_authority: bool
@@ -59,7 +68,15 @@ def jaccard(left: list[int], right: list[int]) -> float:
     return matches / len(left)
 
 
-def _explain(scope: float, reissue: float, same_authority: bool, same_category: bool) -> str:
+def _explain(
+    scope: float,
+    reissue: float,
+    same_authority: bool,
+    same_category: bool,
+    *,
+    bidder_count: int | None = None,
+    awarded_value: float | None = None,
+) -> str:
     if reissue >= REISSUE_THRESHOLD:
         return "Near-identical wording — likely the same tender re-advertised."
     parts = []
@@ -73,6 +90,16 @@ def _explain(scope: float, reissue: float, same_authority: bool, same_category: 
         parts.append("same authority")
     if same_category:
         parts.append("same work category")
+    # The outcome is the most decision-relevant thing a precedent carries, so
+    # it is named rather than left for the reader to find in the row.
+    if bidder_count is not None:
+        parts.append(
+            "awarded with no bids recorded"
+            if bidder_count == 0
+            else f"awarded against {bidder_count} bid{'s' if bidder_count != 1 else ''}"
+        )
+    elif awarded_value is not None:
+        parts.append("awarded")
     return ", ".join(parts).capitalize() + "."
 
 
@@ -111,6 +138,10 @@ async def find_similar(
                 models.HistoricalTender.work_category,
                 models.HistoricalTender.published_date,
                 models.HistoricalTender.estimated_value,
+                models.HistoricalTender.awarded_value,
+                models.HistoricalTender.winning_bidder,
+                models.HistoricalTender.bidder_count,
+                models.HistoricalTender.awarded_date,
                 models.HistoricalTender.minhash_signature,
                 models.HistoricalTender.scope_embedding.cosine_distance(vector),
             )
@@ -123,8 +154,8 @@ async def find_similar(
 
     matches: list[Match] = []
     for row in rows:
-        scope = 1.0 - float(row[7])
-        reissue = jaccard(subject_signature, list(row[6] or []))
+        scope = 1.0 - float(row[11])
+        reissue = jaccard(subject_signature, list(row[10] or []))
         same_authority = bool(row[2] and row[2] == subject["authority"])
         same_category = bool(row[3] and row[3] == subject["category"])
         matches.append(
@@ -135,12 +166,23 @@ async def find_similar(
                 category=row[3],
                 published=row[4].isoformat() if row[4] else None,
                 estimated_value=float(row[5]) if row[5] else None,
+                awarded_value=float(row[6]) if row[6] else None,
+                winning_bidder=row[7],
+                bidder_count=row[8],
+                awarded=row[9].isoformat() if row[9] else None,
                 scope_similarity=round(scope, 4),
                 reissue_likelihood=round(reissue, 4),
                 same_authority=same_authority,
                 same_category=same_category,
                 is_probable_reissue=reissue >= REISSUE_THRESHOLD,
-                why=_explain(scope, reissue, same_authority, same_category),
+                why=_explain(
+                    scope,
+                    reissue,
+                    same_authority,
+                    same_category,
+                    bidder_count=row[8],
+                    awarded_value=float(row[6]) if row[6] else None,
+                ),
             )
         )
 

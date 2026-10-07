@@ -126,20 +126,37 @@ tender afterwards.
 
 ### Downloading tender documents
 
-**This does not work end to end yet — upload packs by hand instead.**
+**The packs are behind bidder authentication — upload them by hand instead.**
 
 CPPP publishes notices; it does not host the files. Past its CAPTCHA, the
 detail page links out to whichever portal the issuing department runs — NIC's
 GePNIC for most, a bespoke site for some — and that is where the documents
-are. `scripts/download_documents.py` drives a real Chrome through the whole
+are. `scripts/download_documents.py` drives a real Chrome through that whole
 chain: it opens the tender from the listing (stored detail URLs are bound to
 the session that made them and return "Invalid Url" on their own), reads the
-CAPTCHA with Tesseract, follows the outbound link, and finds the download.
+CAPTCHA with Tesseract, finds the "Tender Document" link, decodes CPPP's
+base64 redirector, and navigates to the department portal.
 
-What is not reliable is the last step. The department portal's download link
-is a session-scoped framework component that the browser declines to save and
-that a plain HTTP fetch, even carrying the browser's cookies, answers with
-HTML instead of the file.
+The portal then asks for a Digital Signature Certificate:
+
+> It seems DSCHandler is not installed or is not started. If DSCHandler is
+> installed, please start it to login!
+
+DSCHandler is the local service that talks to a DSC — a hardware token issued
+to a registered bidder. The packs are released only to an authenticated
+bidder, so the script reports `requires_signature` and stops. That is an
+authorisation boundary, and getting past it would mean impersonating a
+registered entity.
+
+If you hold a DSC, the practical route is to download the pack in your own
+browser with the token attached and upload it — which is also what an
+estimator does anyway, since they already have the pack.
+
+A note on reliability: the CAPTCHA reader clears about one image in seven, so
+raise `--max-captcha-attempts` (the default 8 often is not enough; 30 is a
+reasonable batch setting). If Chrome dies mid-run — an auto-update swapping
+the binary under a live session is the usual cause — the script restarts the
+browser and retries the tender rather than failing the whole batch.
 
 Because it needs Chrome and Tesseract, run it on the host rather than inside
 the API container.
@@ -171,6 +188,36 @@ Each pack gets a bounded number of OCR attempts (`CAPTCHA_MAX_ATTEMPTS`): on a
 rejection the script refreshes the image and reads again, and it pauses
 between tenders. `--debug-dir var/captcha` saves every image beside its read,
 for tuning the threshold against real portal CAPTCHAs.
+
+### Award outcomes for the comparison corpus
+
+Comparison against past tenders is thin without outcomes: what the work was
+awarded for, to whom, and against how many bidders. None of that exists until
+after award, so the notice listing cannot carry it. CPPP publishes it
+separately under Result of Tenders, and this reads it into
+`historical_tenders`:
+
+```bash
+python scripts/scrape_awards.py --year 2026 --limit 10
+python scripts/scrape_awards.py --keyword construction --limit 6
+python scripts/scrape_awards.py --coverage        # how much of the corpus has outcomes
+python scripts/scrape_awards.py --year 2026 --dry-run   # read without storing
+```
+
+Needs Chrome and Tesseract, like the downloader, so run it on the host.
+
+Slow by construction: the search and every detail page sit behind their own
+CAPTCHA, each cleared about one attempt in seven, so a record costs a dozen or
+more page loads. Budget a few minutes per record and run it as a batch. One
+search yields a page of links, so the search CAPTCHA is paid once per page
+rather than once per record.
+
+Two things to know about the data. The portal states no currency for the
+contract value and prints its own disclaimer beside it, so the figure is
+stored flagged as unverified and nothing presents it as a checked rupee
+amount. And many awards are published with the value left at zero, which is
+recorded as *not stated* rather than as a nil contract — so expect outcomes on
+a minority of rows.
 
 ### Everyday commands
 

@@ -36,8 +36,8 @@ def render_case(result: CaseResult) -> str:
         f"case: {result.case_key}   ({result.pages} pages, {result.chunks} chunks)",
         f"tender: {result.tender_id}",
         "",
-        f"  {'':5} {'fact':44} {'expected':23} {'extracted':23} page  conf",
-        f"  {'-' * 103}",
+        f"  {'':5} {'fact':44} {'expected':23} {'extracted':23} page  box conf",
+        f"  {'-' * 107}",
     ]
 
     for score in report.scores:
@@ -50,7 +50,7 @@ def render_case(result: CaseResult) -> str:
         lines.append(
             f"  {_MARK[score.verdict]:5} {score.key:44} "
             f"{_short(score.expected):23} {_short(score.actual):23} "
-            f"{page:5} {score.confidence:.2f}"
+            f"{page:5} {'yes' if score.has_region else '-':3} {score.confidence:.2f}"
         )
 
     total = len(report.scorable)
@@ -62,6 +62,8 @@ def render_case(result: CaseResult) -> str:
         f"(of {report.correct + report.wrong} asserted)",
         f"  page accuracy    {report.page_accuracy:6.1%}   "
         f"(of {report.pages_judged} citations judged)",
+        f"  region coverage  {report.region_coverage:6.1%}   "
+        f"(facts with a bounding box, not just a page)",
     ]
 
     abstention = result.abstention
@@ -106,6 +108,7 @@ def as_dict(results: list[CaseResult]) -> dict[str, Any]:
                 "value_accuracy": round(r.extraction.accuracy, 4),
                 "value_precision": round(r.extraction.precision, 4),
                 "page_accuracy": round(r.extraction.page_accuracy, 4),
+                "region_coverage": round(r.extraction.region_coverage, 4),
                 "abstention_rate": round(r.abstention.rate, 4),
                 "facts": [
                     {
@@ -116,6 +119,7 @@ def as_dict(results: list[CaseResult]) -> dict[str, Any]:
                         "expected_page": s.expected_page,
                         "actual_page": s.actual_page,
                         "page_correct": s.page_correct,
+                        "bbox": s.actual_bbox,
                         "confidence": round(s.confidence, 3),
                     }
                     for s in r.extraction.scores

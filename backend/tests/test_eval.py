@@ -202,3 +202,39 @@ class TestRenderedDocument:
         parsed = parse_pdf(render_pdf(NHAI_BYPASS))
         text = parsed.pages[page - 1].text
         assert needle in " ".join(text.split()), f"{needle!r} is not on page {page}"
+
+
+class TestReproducibility:
+    """The fixture has to render to identical bytes every time.
+
+    Ingest identifies a document version by the hash of its bytes, so a PDF
+    carrying a creation timestamp or a random trailer ID is a *different*
+    document on every run. The corpus then fills with versions of the same
+    file, and retrieval answers from whichever copy ranks first — which is
+    how five facts came back with a page but no bounding box.
+    """
+
+    def test_two_renders_are_byte_identical(self) -> None:
+        assert render_pdf(NHAI_BYPASS) == render_pdf(NHAI_BYPASS)
+
+    def test_the_frozen_pdf_still_parses(self) -> None:
+        # Blanking the trailer ID overwrites bytes in place; if it ever
+        # changed the file's length, the cross-reference offsets would be
+        # wrong and the document would not open at all.
+        parsed = parse_pdf(render_pdf(NHAI_BYPASS))
+        assert len(parsed.pages) == len(NHAI_BYPASS.pages)
+        assert "284,50,00,000" in " ".join(parsed.pages[0].text.split())
+
+    def test_freezing_preserves_length(self) -> None:
+        from app.eval.golden import _freeze_document_id
+
+        raw = b"trailer\n<</Size 21/ID[<ABCDEF01><99887766>]>>\nstartxref\n5719"
+        frozen = _freeze_document_id(raw)
+        assert len(frozen) == len(raw)
+        assert b"<00000000><00000000>" in frozen
+
+    def test_freezing_a_pdf_without_an_id_is_a_no_op(self) -> None:
+        from app.eval.golden import _freeze_document_id
+
+        raw = b"trailer\n<</Size 21/Root 1 0 R>>\nstartxref\n10"
+        assert _freeze_document_id(raw) == raw

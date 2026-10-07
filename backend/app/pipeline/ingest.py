@@ -176,6 +176,9 @@ async def ingest_pdf(
                     page_to=chunk.page_to,
                     page_offsets=[[page, offset] for page, offset in chunk.page_offsets],
                     bbox=chunk.bbox,
+                    block_spans=[
+                        [span.start, span.end, span.page, *span.bbox] for span in chunk.blocks
+                    ],
                     section_path=chunk.section_path,
                     is_table=chunk.is_table,
                     embedding=reusable.get(chunk_digest) or fresh.get(chunk_digest),

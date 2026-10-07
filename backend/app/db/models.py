@@ -272,6 +272,13 @@ class Chunk(Base):
     page_offsets: Mapped[list[list[int]] | None] = mapped_column(JSONB)
     # [x0, y0, x1, y1] in PDF points, for the viewer's highlight overlay.
     bbox: Mapped[list[float] | None] = mapped_column(JSONB)
+    # [[start, end, page, x0, y0, x1, y1], ...] — one entry per laid-out block
+    # of the source page, giving where its text landed inside `content`. This
+    # is what narrows a citation from a page to a region: a quote located at
+    # an offset maps to the blocks covering it, and their union is the box to
+    # highlight. Stored flat rather than as objects because it is read as a
+    # whole and never queried into.
+    block_spans: Mapped[list[list[float]] | None] = mapped_column(JSONB)
 
     # Clause or section reference as printed in the document, which is how
     # people actually refer to tender terms.

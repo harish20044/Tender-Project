@@ -18,13 +18,21 @@ not the authorisation.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import contextlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import (
+    InvalidSessionIdException,
+    NoAlertPresentException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as conditions
@@ -36,12 +44,28 @@ from app.corpus.cppp import LISTINGS, ScrapedTender, _page_url
 
 logger = get_logger(__name__)
 
+# CPPP wraps every outbound tender-document link in its own redirector, with
+# the destination base64-encoded in the path.
+REDIRECT_PATH = "/cppp/tenderredirect/by/"
+
+# Phrases the department portals use when they want a Digital Signature
+# Certificate before they will show anything. DSCHandler is the local service
+# that talks to the bidder's hardware token.
+SIGNATURE_REQUIRED_MARKERS = (
+    "dschandler",
+    "digital signature",
+    "dsc is not",
+    "please start it to login",
+    "signer is not running",
+)
+
 DownloadStatus = Literal[
     "downloaded",
     "not_found",
     "no_download_link",
     "captcha_exhausted",
     "download_timeout",
+    "requires_signature",
     "failed",
 ]
 
@@ -163,6 +187,43 @@ REJECTION_MARKERS = (
 )
 
 
+def decode_redirect_target(href: str) -> str | None:
+    """The real destination behind a CPPP ``tenderredirect`` link.
+
+    CPPP no longer links straight out to the issuing department. It links to
+    ``/cppp/tenderredirect/by/<base64 of the destination>``, so the hop stays
+    on its own domain and the target is recoverable without following it —
+    which is how the department portal can be identified and logged before a
+    click, and how a redirect that merely points back into CPPP is told apart
+    from one that leads to a document pack.
+
+    Returns None when ``href`` is not a redirect, or when the payload will
+    not decode, so a caller can fall back to judging the href itself.
+    """
+    marker = REDIRECT_PATH
+    position = href.lower().find(marker)
+    if position == -1:
+        return None
+
+    payload = href[position + len(marker) :].split("/")[0].split("?")[0].strip()
+    if not payload:
+        return None
+
+    # The portal omits base64 padding in some builds; "==" is always safe to
+    # add because the decoder ignores surplus padding.
+    try:
+        decoded = base64.b64decode(payload + "==", validate=False)
+    except (ValueError, binascii.Error):
+        return None
+
+    try:
+        target = decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    return target if target.lower().startswith("http") else None
+
+
 class TenderDocumentDownloader:
     """One browser, one tender at a time. Use as a context manager."""
 
@@ -187,6 +248,7 @@ class TenderDocumentDownloader:
         page_load_timeout: float = 90.0,
         download_timeout: float = 120.0,
         listing_search_pages: int = 5,
+        max_session_restarts: int = 2,
         debug_dir: Path | str | None = None,
     ) -> None:
         self._download_dir = Path(download_dir)
@@ -198,7 +260,15 @@ class TenderDocumentDownloader:
         # needs longer to settle than a click within CPPP does.
         self._portal_settle_seconds = 6.0
         self._listing_search_pages = listing_search_pages
+        # Chrome dies mid-run on some machines, an auto-update under a live
+        # session being the usual cause. A restart budget turns that into a
+        # retry rather than the end of the batch.
+        self._max_session_restarts = max(0, max_session_restarts)
         self._debug_dir = Path(debug_dir) if debug_dir else None
+        # Set when a department portal demands a Digital Signature
+        # Certificate, so the outcome can name that rather than report a
+        # generic failure.
+        self._signature_wall: str | None = None
         self._driver: webdriver.Chrome | None = None
 
     def __enter__(self) -> TenderDocumentDownloader:
@@ -254,10 +324,72 @@ class TenderDocumentDownloader:
 
         return driver
 
+    @staticmethod
+    def _session_is_dead(exc: BaseException) -> bool:
+        """Whether an exception means the browser itself has gone.
+
+        Chrome does die mid-run — an auto-update swapping the binary under a
+        live session is the usual cause, and a long CAPTCHA sequence is
+        exactly the kind of workload that outlives one. Once it has, every
+        subsequent call fails identically, so a batch that does not notice
+        reports every remaining tender as a download failure.
+        """
+        text = str(exc).lower()
+        return isinstance(exc, InvalidSessionIdException) or any(
+            marker in text
+            for marker in (
+                "invalid session id",
+                "browser has closed the connection",
+                "not connected to devtools",
+                "chrome not reachable",
+                "disconnected",
+            )
+        )
+
+    def _restart_driver(self) -> None:
+        """Replace a dead browser with a fresh one."""
+        logger.warning("browser_restarting")
+        if self._driver is not None:
+            # Already gone is the normal case here, which is what brought us.
+            with contextlib.suppress(WebDriverException):
+                self._driver.quit()
+            self._driver = None
+        self._driver = self._build_driver()
+
     def download(self, tender: ScrapedTender) -> DownloadResult:
-        """Take one tender from its detail page to a saved ZIP."""
+        """Take one tender from its detail page to a saved ZIP.
+
+        Retries once on a fresh browser if the session dies mid-attempt, so a
+        Chrome crash costs one tender's work rather than the whole batch.
+        """
+        for attempt in range(1, self._max_session_restarts + 2):
+            try:
+                return self._download_once(tender)
+            except WebDriverException as exc:
+                if not self._session_is_dead(exc) or attempt > self._max_session_restarts:
+                    return DownloadResult(
+                        tender.reference, tender.tender_id, "failed", error=str(exc)[:300]
+                    )
+                logger.warning(
+                    "download_session_lost",
+                    reference=tender.reference,
+                    attempt=attempt,
+                    error=str(exc)[:120],
+                )
+                self._restart_driver()
+
+        return DownloadResult(
+            tender.reference,
+            tender.tender_id,
+            "failed",
+            error="The browser could not be kept alive long enough to finish.",
+        )
+
+    def _download_once(self, tender: ScrapedTender) -> DownloadResult:
+        """One attempt, on the browser as it currently stands."""
         driver = self._require_driver()
         before = {path.name for path in self._download_dir.glob("*.zip")}
+        self._signature_wall = None
         logger.info("download_start", reference=tender.reference)
 
         try:
@@ -287,6 +419,19 @@ class TenderDocumentDownloader:
             # issuing department's own portal, and that is where the files
             # actually live.
             if not self._follow_to_department_portal():
+                if self._signature_wall:
+                    logger.info(
+                        "portal_requires_signature",
+                        reference=tender.reference,
+                        message=self._signature_wall[:200],
+                    )
+                    return DownloadResult(
+                        tender.reference,
+                        tender.tender_id,
+                        "requires_signature",
+                        attempts=attempts,
+                        error=self._signature_wall[:300],
+                    )
                 logger.warning(
                     "department_link_absent",
                     reference=tender.reference,
@@ -333,6 +478,12 @@ class TenderDocumentDownloader:
                 zip_path=zip_path,
             )
         except Exception as exc:  # a browser session can fail in many ways
+            # A dead browser is the caller's to handle: it restarts the
+            # session and tries again. Swallowing it here would turn every
+            # tender after the crash into a download failure and hide the
+            # one problem that is actually recoverable.
+            if self._session_is_dead(exc):
+                raise
             logger.error("download_failed", reference=tender.reference, error=str(exc))
             return DownloadResult(tender.reference, tender.tender_id, "failed", error=str(exc))
         finally:
@@ -390,12 +541,22 @@ class TenderDocumentDownloader:
     # the label's own text node rather than `contains(., ...)`, which also
     # matches every ancestor holding that text — including <body>, whose
     # "following" links are the page footer, not the tender.
+    # CPPP marks the link to the issuing department's portal with its own
+    # class, which is a far better signal than guessing at URL shapes: it is
+    # the portal naming the link itself. There is exactly one per detail page.
+    _DEPARTMENT_LINK_SELECTOR = "a.tndr_redirect"
     _DEPARTMENT_LINK_XPATH = (
         "//*[normalize-space(text())='Tender Document']/following::a[starts-with(@href, 'http')][1]"
     )
     # Fallback, for a page that labels it differently: NIC's GePNIC
     # deployments (the large majority) and the handful of bespoke portals.
-    _DEPARTMENT_LINK_MARKERS = ("tnid", "tenderdetails", "tenderview", "tenderdocument")
+    _DEPARTMENT_LINK_MARKERS = (
+        "tnid",
+        "tenderdetails",
+        "tenderview",
+        "tenderdocument",
+        REDIRECT_PATH,
+    )
     # Page furniture that sits in the same document and would otherwise
     # satisfy "an external link": the mobile apps, and CPPP's own sibling
     # portals listed in the navigation.
@@ -412,21 +573,58 @@ class TenderDocumentDownloader:
     )
 
     def _is_department_link(self, href: str) -> bool:
-        if not href.startswith("http") or "eprocure.gov.in/cppp" in href:
+        """Whether an href leads out to the portal that holds the documents.
+
+        CPPP routes these through its own redirector now, so a link to the
+        department sits on ``eprocure.gov.in/cppp`` like everything else and
+        names its destination in a base64 path segment. Rejecting every CPPP
+        URL — which is what this used to do — therefore threw away the only
+        link that mattered, and the download stopped one hop short of the
+        files with "no download link" as the explanation.
+
+        For a redirect the destination is decoded and judged; for a direct
+        link the href itself is.
+
+        Takes the href exactly as the page gives it, never lowercased: the
+        destination is base64, which is case-sensitive, so folding the case
+        of the href corrupts the payload and the link gets rejected for
+        being undecodable. Case folding happens below, on the decoded
+        target, where it is safe.
+        """
+        lowered = href.lower()
+        if not lowered.startswith("http"):
             return False
-        return not any(host in href for host in self._NON_TENDER_HOSTS)
+
+        target = decode_redirect_target(href)
+        if target is not None:
+            candidate = target.lower()
+            # A redirect that points back into CPPP is navigation, not a pack.
+            if "eprocure.gov.in/cppp" in candidate:
+                return False
+        elif "eprocure.gov.in/cppp" in lowered:
+            return False
+        else:
+            candidate = lowered
+
+        return not any(host in candidate for host in self._NON_TENDER_HOSTS)
 
     def _department_link(self) -> Any | None:
         driver = self._require_driver()
 
+        # The portal's own class for this link, which beats every heuristic
+        # below it when present.
+        for element in driver.find_elements(By.CSS_SELECTOR, self._DEPARTMENT_LINK_SELECTOR):
+            if self._is_department_link(element.get_attribute("href") or ""):
+                return element
+
         for element in driver.find_elements(By.XPATH, self._DEPARTMENT_LINK_XPATH):
-            if self._is_department_link((element.get_attribute("href") or "").lower()):
+            if self._is_department_link(element.get_attribute("href") or ""):
                 return element
 
         for element in driver.find_elements(By.TAG_NAME, "a"):
-            href = (element.get_attribute("href") or "").lower()
+            href = element.get_attribute("href") or ""
             if self._is_department_link(href) and any(
-                marker in href for marker in self._DEPARTMENT_LINK_MARKERS
+                marker in href.lower() for marker in self._DEPARTMENT_LINK_MARKERS
             ):
                 return element
         return None
@@ -445,11 +643,38 @@ class TenderDocumentDownloader:
             return False
 
         driver = self._require_driver()
-        logger.info("following_department_link", url=(element.get_attribute("href") or "")[:200])
-        self._click(element)
+        href = element.get_attribute("href") or ""
+        target = decode_redirect_target(href)
+
+        if target is not None:
+            # Navigated to directly rather than clicked. CPPP's redirector
+            # anchors carry rel="noreferrer", so following one sends no
+            # Referer, and the redirector answers a refererless request with
+            # a 302 back to the CPPP home page — the click appears to work
+            # and silently lands nowhere. The destination is encoded in the
+            # link itself, so the redirector adds nothing but a way to fail.
+            logger.info("navigating_to_department_portal", url=target[:200], via=href[:120])
+            driver.get(target)
+        else:
+            logger.info("following_department_link", url=href[:200])
+            self._click(element)
+
         time.sleep(self._portal_settle_seconds)
+        alert = self._dismiss_alert()
+        if alert and self._needs_signature(alert):
+            self._signature_wall = alert.strip()
+            return False
         self._adopt_new_tab()
-        return "unauthorizationpage" not in driver.current_url.lower()
+
+        current = driver.current_url.lower()
+        if "unauthorizationpage" in current:
+            return False
+        # A redirector that bounced leaves us back on CPPP, which is not the
+        # department portal however much it looks like a successful hop.
+        if target is not None and "eprocure.gov.in/cppp" in current:
+            logger.warning("department_portal_bounced", url=driver.current_url[:200])
+            return False
+        return True
 
     # --- the CAPTCHA gate ---------------------------------------------------- #
 
@@ -543,6 +768,43 @@ class TenderDocumentDownloader:
         # click dispatches straight to the element.
         self._require_driver().execute_script("arguments[0].click();", element)
 
+    def _dismiss_alert(self) -> str | None:
+        """Clear a native dialog, returning what it said.
+
+        The department portals greet an unauthenticated visitor with a
+        JavaScript alert, and while one is open every other WebDriver call
+        fails with "unexpected alert open" — so the real message is lost and
+        the run looks like a driver fault. Its text is the most informative
+        thing on the page, so it is returned rather than discarded.
+        """
+        driver = self._driver
+        if driver is None:
+            return None
+        try:
+            alert = driver.switch_to.alert
+            text = alert.text or ""
+            alert.accept()
+            logger.info("portal_alert_dismissed", text=text[:200])
+            return text
+        except NoAlertPresentException:
+            return None
+        except WebDriverException as exc:
+            logger.warning("portal_alert_unreadable", error=str(exc)[:120])
+            return None
+
+    @staticmethod
+    def _needs_signature(text: str) -> bool:
+        """Whether a portal is asking for a Digital Signature Certificate.
+
+        This is the boundary the project stops at. A DSC is a hardware token
+        issued to a registered bidder, and the pack sits behind it: reaching
+        the portal is not the same as being allowed in. Detected so the
+        outcome can say so plainly, because "failed" invites someone to go
+        looking for a bug that is not there.
+        """
+        lowered = text.lower()
+        return any(marker in lowered for marker in SIGNATURE_REQUIRED_MARKERS)
+
     def _adopt_new_tab(self) -> None:
         driver = self._require_driver()
         handles = driver.window_handles
@@ -550,14 +812,26 @@ class TenderDocumentDownloader:
             driver.switch_to.window(handles[-1])
 
     def _return_to_base_tab(self) -> None:
+        """Close any tab the download opened and go back to the first.
+
+        Runs in a ``finally``, so it must not raise. A crashed browser makes
+        every call here fail with an invalid session id, and an exception
+        thrown from cleanup replaces the real error with a stack trace about
+        window handles — which is how a Chrome crash came to look like a
+        download bug. Tidying up is best-effort by nature: the session is
+        discarded at the end of the batch regardless.
+        """
         driver = self._driver
         if driver is None:
             return
-        for handle in driver.window_handles[1:]:
-            driver.switch_to.window(handle)
-            driver.close()
-        if driver.window_handles:
-            driver.switch_to.window(driver.window_handles[0])
+        try:
+            for handle in driver.window_handles[1:]:
+                driver.switch_to.window(handle)
+                driver.close()
+            if driver.window_handles:
+                driver.switch_to.window(driver.window_handles[0])
+        except WebDriverException as exc:
+            logger.warning("tab_cleanup_failed", error=f"{type(exc).__name__}: {str(exc)[:120]}")
 
     def _require_driver(self) -> webdriver.Chrome:
         if self._driver is None:

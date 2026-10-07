@@ -88,6 +88,7 @@ async def score_extraction(case: GoldenCase, tender_id: str) -> ExtractionReport
                 expected_pages=case.expected_pages,
                 actual_page=fact.page if fact else None,
                 confidence=fact.confidence if fact else 0.0,
+                actual_bbox=fact.bbox if fact else None,
             )
         )
     return ExtractionReport(case_key=case.key, scores=tuple(scores))

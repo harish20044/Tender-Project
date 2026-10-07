@@ -148,12 +148,14 @@ All four objectives run end to end against the live stack.
 | Upload and ingest | Working. PDF → per-page parse → chunks that keep their page range → Jina embeddings in pgvector. |
 | Question answering | Working. Hybrid retrieval (pgvector cosine + Postgres full text, fused by reciprocal rank), answered from retrieved passages only, with citations. |
 | The 50 standard FAQs | Working, cached per tender. |
-| Fact extraction | Working. 22 decision-relevant figures with the page and sentence each came from. |
+| Fact extraction | Working. 22 decision-relevant figures with the page, sentence and page region each came from. |
 | Bid / No-Bid decision | Working. Nine gates, deterministic, with a risk register and counterfactuals. |
-| Comparison against past tenders | Working. Scope similarity, reissue detection and structural matches, over a corpus seeded from real scraped tenders. |
+| Comparison against past tenders | Working. Scope similarity, reissue detection and structural matches, over a corpus seeded from real scraped tenders. Awarded value, winning bidder and bid count where the award has been published. |
 | Workspace screen | Working. Findings beside their source sentence, correctable in place. |
 | Sign-in and roles | Working. Tokens verified against Supabase's public keys; every route protected by default. |
 | Evaluation | Working. A golden set scored through the production pipeline, with thresholds that fail the run. |
+| Award outcomes | Working. Reads CPPP's Result of Tenders through two CAPTCHA gates into the historical corpus. |
+| Document pack download | Reaches the issuing portal and stops at its Digital Signature gate — see below. |
 
 ---
 
@@ -167,13 +169,14 @@ python scripts/evaluate.py                      # the table below
 python scripts/evaluate.py --json runs/today.json
 ```
 
-Three rates, because they fail for different reasons and have opposite
+Four rates, because they fail for different reasons and have opposite
 remedies:
 
 | Rate | What it catches | Last run |
 |---|---|---|
 | Value accuracy | Right number, right unit — crore and lakh converted to rupees, months to days | 22/22 |
-| Page accuracy | The citation points at the page the value is actually on | 22/22 |
+| Page accuracy | The citation points at the page the value is actually on | 21/22 |
+| Region coverage | The citation narrows to a box on that page, not just the page | 21/22 |
 | Abstention | A question the document does not answer is declined, not invented | 3/3 |
 
 Precision is reported beside accuracy deliberately: a system that answers
@@ -182,12 +185,28 @@ reverse. A null counts as an honest abstention and is penalised in accuracy
 only.
 
 The harness runs the real ingest, retrieval and extraction path rather than
-calling the model directly — a prompt-level test would have missed the bug
-where retrieval truncated passages below the chunk size and "liquidated
-damages" came back as *not stated*. It needs the database and both provider
-keys and spends real tokens, which is why it is a script and not part of
-`pytest`. `scripts/evaluate.py` exits non-zero below its thresholds, so it
-can gate a release.
+calling the model directly. That is the whole point, and it has earned its
+keep: writing it surfaced three bugs that no prompt-level test could reach.
+
+- **The rate limiter could deadlock.** A single call costing more than the
+  whole per-minute token budget could never satisfy the ceiling, so it waited
+  for room that would never appear — the window emptied, the call still did
+  not fit, and it slept another minute, forever. Extraction simply hung, with
+  no error. Ten retrieved passages of a long tender clear a 6000 TPM ceiling
+  on their own, so any real pack would have hit it.
+- **Retrieval mixed superseded document versions.** Every version's chunks
+  competed on equal terms, so a corrected pack could be answered from the
+  text it corrected, and which copy won was arbitrary. This is what held
+  region coverage down to 77%: passages from versions written before block
+  geometry existed carried no boxes.
+- **The golden PDF was not reproducible.** It embedded a creation timestamp
+  and a random trailer ID, so ingest saw a new document on every run and the
+  corpus filled with copies of one file — which is how the version-mixing bug
+  became visible in the first place.
+
+It needs the database and both provider keys and spends real tokens, which is
+why it is a script and not part of `pytest`. `scripts/evaluate.py` exits
+non-zero below its thresholds, so it can gate a release.
 
 The honest limitation: the golden document is one this project generates, so
 its figures are written in the forms Indian tenders use but its layout is far
@@ -195,10 +214,60 @@ cleaner than a scanned pack. It measures unit conversion, page attribution
 and abstention; it does not prove performance on a real scanned document.
 `GoldenCase` takes an annotated real pack as soon as there is one.
 
-### What is honestly not done
+### Where this stops, and why
 
-**Document packs are not downloaded from the portal.** CPPP publishes notices but does not host the files: past its CAPTCHA the detail page links out to whichever portal the issuing department runs, and those links are bound to the browser session that produced them. The chain is implemented as far as the department portal, and the CAPTCHA reader passes the gate, but the final fetch is not reliable. Documents are uploaded by hand in the meantime, which is how an estimator works anyway — they already have the pack.
+**Document packs stop at a Digital Signature Certificate.** The chain is
+implemented and runs: open the tender's live detail page, clear CPPP's
+CAPTCHA, find the "Tender Document" link, decode it, and land on the issuing
+department's own portal. The portal then says, verbatim:
 
-**The historical corpus is listing-level.** It is seeded from real scraped notices, so it carries titles, authorities, categories and dates, but not awarded values or bidder counts — those only exist after award. Comparison works on scope and wording rather than on outcomes.
+> It seems DSCHandler is not installed or is not started. If DSCHandler is
+> installed, please start it to login!
 
-**Page attribution is chunk-level.** A citation points at the page range of the passage a fact came from, not the exact bounding box. The parser captures block geometry, so narrowing this is a small change, but today a citation says "pp. 1-3" where the schema can hold a precise box.
+DSCHandler is the local service that talks to a **Digital Signature
+Certificate** — a hardware token issued to a *registered bidder*. The packs
+sit behind bidder authentication, so reaching the portal is not the same as
+being allowed in. This is an authorisation boundary, not a technical one, and
+automating past it would mean impersonating a registered entity. The
+downloader reports `requires_signature` and stops there on purpose.
+
+In practice this costs little: an estimator *is* a registered bidder, has the
+token, and already holds the pack. Upload is the real workflow, and it is the
+path the pipeline is built around.
+
+Three things on the way there were genuine bugs, now fixed: CPPP moved its
+outbound links behind its own base64 redirector, so the link to the
+department sat on `eprocure.gov.in/cppp` — exactly the host the matcher
+excluded, which is why every tender reported "no download link"; those
+redirector anchors carry `rel="noreferrer"`, so following one sends no
+Referer and the redirector answers with a 302 back to the CPPP home page, a
+click that appears to work and lands nowhere; and a crashed browser threw
+from the cleanup in `finally`, replacing the real error with a stack trace
+about window handles.
+
+**Award outcomes are published for some tenders, not all.** The corpus now
+carries awarded value, winning bidder and bid count, read from CPPP's Result
+of Tenders (`scripts/scrape_awards.py`). Two caveats, both the portal's. It
+prints its own disclaimer beside the figure — "Currency regarding Contract
+Value may please be checked with the corresponding tender portals/websites" —
+so the value carries no stated unit and is flagged unverified rather than
+presented as a checked rupee amount. And many awards are published with the
+value left at zero, which is recorded as *not stated* rather than as a nil
+contract. Expect outcomes on a minority of rows, and read coverage with
+`scripts/scrape_awards.py --coverage`.
+
+Gathering them is slow by construction: the search and every detail page sit
+behind separate CAPTCHAs, cleared about one attempt in seven, so a record
+costs a dozen or more page loads. It is a batch job, not a request handler.
+
+**Citations narrow to a block, not a glyph.** A fact now carries the rectangle
+of the laid-out blocks its quote spans, stored per chunk and served on the
+fact. Where a quote cannot be located in its passage the page citation
+survives and the box is omitted rather than guessed — one fact in the golden
+run takes that path, and the eval measures it as region coverage rather than
+hiding it.
+
+The box reaches the API but **the workspace does not draw it yet**: findings
+still highlight their source sentence as text, not a region over the page
+image. That is the one piece of this left to build, and it is now a frontend
+change against data that is already there.

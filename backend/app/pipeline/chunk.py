@@ -39,21 +39,68 @@ _CHARS_PER_TOKEN = 4
 _PAGE_BREAK_MIN_FILL = 0.35
 
 
-def offset_of(quote: str, text: str) -> int:
-    """Where ``quote`` starts in ``text``, or -1.
+def span_of(quote: str, text: str) -> tuple[int, int]:
+    """Where ``quote`` starts and ends in ``text``, or (-1, -1).
 
     Matched against the raw text with whitespace treated as elastic, rather
     than by normalising both sides and scaling the result back: a quote that
     crosses a line break differs from the source by exactly the characters
     that normalising removes, and the resulting drift is enough to put an
     offset on the wrong side of a page boundary.
+
+    Only the first twelve words are matched, which is long enough to be
+    unambiguous and short enough to survive the model paraphrasing the tail
+    of a long quote. The end returned is therefore the end of the matched
+    prefix, not of the whole quote — good enough to pick out which blocks a
+    citation covers, which is all it is used for.
     """
     words = quote.split()[:12]
     if not words:
-        return -1
+        return -1, -1
     pattern = re.compile(r"\s+".join(re.escape(word) for word in words), re.IGNORECASE)
     match = pattern.search(text)
-    return match.start() if match else -1
+    return (match.start(), match.end()) if match else (-1, -1)
+
+
+def offset_of(quote: str, text: str) -> int:
+    """Where ``quote`` starts in ``text``, or -1."""
+    return span_of(quote, text)[0]
+
+
+@dataclass(frozen=True)
+class BlockSpan:
+    """A laid-out block of the source page, and where its text landed.
+
+    ``start`` and ``end`` are offsets into the chunk's own content, so a
+    quote located in the chunk can be mapped back to the region of the page
+    it was printed in.
+    """
+
+    start: int
+    end: int
+    page: int
+    bbox: tuple[float, float, float, float]
+
+    def overlaps(self, start: int, end: int) -> bool:
+        return self.start < end and start < self.end
+
+
+def union_bbox(boxes: list[tuple[float, float, float, float]]) -> list[float] | None:
+    """The smallest box covering all of ``boxes``.
+
+    A quote usually spans two or three blocks — a clause heading and the
+    sentence under it — and one box around the lot is what a highlight
+    overlay needs. The union is loose where blocks sit in separate columns,
+    which tender text rarely does.
+    """
+    if not boxes:
+        return None
+    return [
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    ]
 
 
 @dataclass(frozen=True)
@@ -66,6 +113,10 @@ class Chunk:
     # quote found at an offset can be attributed to the page it truly sits on
     # rather than to the first page of the range.
     page_offsets: list[tuple[int, int]] = field(default_factory=list)
+    # Where each source block's text landed in `content`, so a quote can be
+    # resolved to the region of the page it was printed in rather than only
+    # to the page.
+    blocks: list[BlockSpan] = field(default_factory=list)
     bbox: list[float] | None = None
     section_path: str | None = None
     is_table: bool = False
@@ -92,6 +143,23 @@ class Chunk:
             return None
         offset = offset_of(quote, self.content)
         return self.page_at(offset) if offset >= 0 else None
+
+    def bbox_of(self, quote: str) -> list[float] | None:
+        """The region of the page a quote was printed in, or None.
+
+        Restricted to blocks on the page the quote *starts* on. A quote
+        running across a page break would otherwise union boxes from two
+        different pages into one meaningless rectangle, and the citation
+        already reports that single starting page.
+        """
+        if not quote or not self.blocks:
+            return None
+        start, end = span_of(quote, self.content)
+        if start < 0:
+            return None
+        page = self.page_at(start)
+        covered = [b.bbox for b in self.blocks if b.page == page and b.overlaps(start, end)]
+        return union_bbox(covered)
 
 
 def _budget_chars() -> tuple[int, int]:
@@ -129,12 +197,13 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
     start_page = 1
     end_page = 1
     offsets: list[tuple[int, int]] = []
+    spans: list[BlockSpan] = []
 
     def flush() -> None:
-        nonlocal buffer, start_page, end_page, offsets
+        nonlocal buffer, start_page, end_page, offsets, spans
         content = buffer.strip()
         if not content:
-            buffer, offsets = "", []
+            buffer, offsets, spans = "", [], []
             return
 
         # strip() moved the content; shift recorded offsets to match.
@@ -144,6 +213,16 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
             for page, offset in offsets
             if offset - shift < len(content)
         ]
+        adjusted_spans = [
+            BlockSpan(
+                start=max(0, span.start - shift),
+                end=min(len(content), span.end - shift),
+                page=span.page,
+                bbox=span.bbox,
+            )
+            for span in spans
+            if span.end - shift > 0 and span.start - shift < len(content)
+        ]
 
         chunks.append(
             Chunk(
@@ -152,6 +231,7 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
                 page_from=start_page,
                 page_to=end_page,
                 page_offsets=adjusted or [(start_page, 0)],
+                blocks=adjusted_spans,
             )
         )
 
@@ -159,6 +239,23 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
         start_page = end_page
         # The carried tail belongs to the page the chunk ended on.
         offsets = [(end_page, 0)] if buffer else []
+        # Carry the spans covering the tail too, rebased onto it, so a quote
+        # answered from the overlap still resolves to a region rather than
+        # losing its geometry the moment it straddles a chunk boundary.
+        if buffer:
+            tail_start = len(content) - len(buffer)
+            spans = [
+                BlockSpan(
+                    start=max(0, span.start - tail_start),
+                    end=min(len(buffer), span.end - tail_start),
+                    page=span.page,
+                    bbox=span.bbox,
+                )
+                for span in adjusted_spans
+                if span.end > tail_start
+            ]
+        else:
+            spans = []
 
     for page in parsed.pages:
         if not page.blocks:
@@ -185,6 +282,17 @@ def chunk_document(parsed: ParsedDocument) -> list[Chunk]:
                     start_page = page.number
                     offsets = [(page.number, 0)]
                 candidate = f"{buffer}\n{block.text}" if buffer else block.text
+            # Where this block's text sits in the candidate buffer: at the end,
+            # after the joining newline where one was added.
+            block_start = len(candidate) - len(block.text)
+            spans.append(
+                BlockSpan(
+                    start=block_start,
+                    end=len(candidate),
+                    page=page.number,
+                    bbox=block.bbox,
+                )
+            )
             buffer = candidate
 
     flush()

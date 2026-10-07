@@ -19,6 +19,7 @@ beside this one as soon as there is a pack to annotate.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -224,6 +225,28 @@ Third Party Liability insurance of not less than Rs. 5,00,00,000 per occurrence.
 CASES: tuple[GoldenCase, ...] = (NHAI_BYPASS,)
 CASES_BY_KEY: dict[str, GoldenCase] = {case.key: case for case in CASES}
 
+# The trailer's /ID array is the one part of a generated PDF that is random
+# per write, and it is the only thing that stops two renders being identical.
+_TRAILER_ID = re.compile(rb"/ID\s*\[\s*<([0-9A-Fa-f]*)>\s*<([0-9A-Fa-f]*)>\s*\]")
+
+
+def _freeze_document_id(pdf: bytes) -> bytes:
+    """Blank the trailer's random document ID.
+
+    Overwritten in place rather than rewritten, so the result is exactly as
+    long as the original: ``startxref`` and the cross-reference table hold
+    byte offsets, and shifting anything by even one byte would produce a
+    corrupt file.
+    """
+    match = _TRAILER_ID.search(pdf)
+    if match is None:
+        return pdf
+    frozen = bytearray(pdf)
+    for group in (1, 2):
+        start, end = match.span(group)
+        frozen[start:end] = b"0" * (end - start)
+    return bytes(frozen)
+
 
 def render_pdf(case: GoldenCase) -> bytes:
     """Build the case's PDF.
@@ -231,11 +254,30 @@ def render_pdf(case: GoldenCase) -> bytes:
     Generated rather than committed as a binary: the text above is then the
     single definition of both the document and its expected answers, and the
     two cannot drift apart in review.
+
+    Byte-for-byte reproducible, which matters more than it looks. Ingest
+    identifies a document version by the hash of its bytes, so a PDF carrying
+    a creation timestamp is a different document on every run: the corpus
+    fills with versions of the same file, and retrieval ends up answering
+    from whichever copy happens to rank first. Fixing the metadata makes a
+    re-run reuse the version it already has.
     """
     import pymupdf
 
     document = pymupdf.open()  # type: ignore[no-untyped-call]
     try:
+        document.set_metadata(  # type: ignore[no-untyped-call]
+            {
+                "title": case.title,
+                "author": "Tender Intelligence evaluation set",
+                "subject": case.reference,
+                "creator": "app.eval.golden",
+                "producer": "app.eval.golden",
+                # A fixed date, so the bytes do not change run to run.
+                "creationDate": "D:20260101000000Z",
+                "modDate": "D:20260101000000Z",
+            }
+        )
         for page_spec in case.pages:
             page = document.new_page()
             page.insert_text((60, 70), page_spec.heading, fontsize=15, fontname="helv")
@@ -246,6 +288,6 @@ def render_pdf(case: GoldenCase) -> bytes:
                 fontname="helv",
                 lineheight=1.35,
             )
-        return bytes(document.tobytes())  # type: ignore[no-untyped-call]
+        return _freeze_document_id(bytes(document.tobytes()))  # type: ignore[no-untyped-call]
     finally:
         document.close()  # type: ignore[no-untyped-call]

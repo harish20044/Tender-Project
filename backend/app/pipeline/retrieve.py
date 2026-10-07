@@ -14,15 +14,16 @@ tuned on.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select, text
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.db import models
 from app.db.session import session_scope
-from app.pipeline.chunk import offset_of
+from app.pipeline.chunk import offset_of, span_of, union_bbox
 from app.providers.base import EmbeddingProvider, RerankProvider
 
 logger = get_logger(__name__)
@@ -44,6 +45,8 @@ class Passage:
     score: float
     # [[page, offset], ...] inside `content`; see models.Chunk.page_offsets.
     page_offsets: list[list[int]] = field(default_factory=list)
+    # [[start, end, page, x0, y0, x1, y1], ...]; see models.Chunk.block_spans.
+    block_spans: list[list[float]] = field(default_factory=list)
 
     @property
     def citation(self) -> str:
@@ -76,6 +79,26 @@ class Passage:
         page = self.page_of(quote) if quote else None
         return f"{self.filename} p.{page}" if page else self.citation
 
+    def bbox_of(self, quote: str) -> list[float] | None:
+        """The region of the page a quote was printed in, or None.
+
+        Narrows a citation from a page to a rectangle. Restricted to blocks
+        on the page the quote starts on, so a quote crossing a page break
+        does not union boxes from two pages into a meaningless one.
+        """
+        if not quote or not self.block_spans:
+            return None
+        start, end = span_of(quote, self.content)
+        if start < 0:
+            return None
+        page = self.page_at(start)
+        covered = [
+            (span[3], span[4], span[5], span[6])
+            for span in self.block_spans
+            if len(span) == 7 and int(span[2]) == page and span[0] < end and start < span[1]
+        ]
+        return union_bbox(covered)
+
 
 def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passage]:
     if not chunk_ids:
@@ -87,6 +110,7 @@ def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passa
             models.Chunk.page_from,
             models.Chunk.page_to,
             models.Chunk.page_offsets,
+            models.Chunk.block_spans,
             models.Document.id,
             models.Document.filename,
         )
@@ -101,20 +125,52 @@ def _rows_to_passages(session: Session, chunk_ids: list[str]) -> dict[str, Passa
             page_from=row[2],
             page_to=row[3],
             page_offsets=[list(entry) for entry in (row[4] or [])],
-            document_id=str(row[5]),
-            filename=row[6],
+            block_spans=[list(entry) for entry in (row[5] or [])],
+            document_id=str(row[6]),
+            filename=row[7],
             score=0.0,
         )
         for row in rows
     }
 
 
+def _current_version_ids(tender_id: str) -> Select[tuple[uuid.UUID]]:
+    """The newest version of each of a tender's documents.
+
+    Retrieval has to be restricted to these. A version exists precisely to
+    supersede the one before it, so letting every version's chunks compete
+    means a corrected pack is answered from the text it corrected — and
+    because both copies rank by the same similarity, which one wins is
+    arbitrary. Partitioning by document rather than taking one newest
+    version overall keeps every document of a multi-document pack in play.
+    """
+    ranked = (
+        select(
+            models.DocumentVersion.id.label("version_id"),
+            func.row_number()
+            .over(
+                partition_by=models.DocumentVersion.document_id,
+                order_by=(
+                    models.DocumentVersion.uploaded_at.desc(),
+                    models.DocumentVersion.id.desc(),
+                ),
+            )
+            .label("recency"),
+        )
+        .join(models.Document, models.DocumentVersion.document_id == models.Document.id)
+        .where(models.Document.tender_id == tender_id)
+        .subquery()
+    )
+    return select(ranked.c.version_id).where(ranked.c.recency == 1)
+
+
 def _vector_ranking(session: Session, vector: list[float], tender_id: str, limit: int) -> list[str]:
     statement = (
         select(models.Chunk.id)
-        .join(models.DocumentVersion, models.Chunk.document_version_id == models.DocumentVersion.id)
-        .join(models.Document, models.DocumentVersion.document_id == models.Document.id)
-        .where(models.Document.tender_id == tender_id, models.Chunk.embedding.is_not(None))
+        .where(
+            models.Chunk.document_version_id.in_(_current_version_ids(tender_id)),
+            models.Chunk.embedding.is_not(None),
+        )
         .order_by(models.Chunk.embedding.cosine_distance(vector))
         .limit(limit)
     )
@@ -126,10 +182,8 @@ def _keyword_ranking(session: Session, query: str, tender_id: str, limit: int) -
     # not tsquery syntax, and to_tsquery raises on ordinary punctuation.
     statement = (
         select(models.Chunk.id)
-        .join(models.DocumentVersion, models.Chunk.document_version_id == models.DocumentVersion.id)
-        .join(models.Document, models.DocumentVersion.document_id == models.Document.id)
         .where(
-            models.Document.tender_id == tender_id,
+            models.Chunk.document_version_id.in_(_current_version_ids(tender_id)),
             text("to_tsvector('english', chunks.content) @@ plainto_tsquery('english', :q)"),
         )
         .order_by(

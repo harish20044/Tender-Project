@@ -15,6 +15,10 @@ import asyncio
 import time
 from collections import deque
 
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class SlidingWindowLimiter:
     """Limits both call count and token volume over a sixty-second window."""
@@ -47,11 +51,26 @@ class SlidingWindowLimiter:
                 self._evict_expired(now)
                 requests, tokens = self._current_usage()
 
-                fits = (
-                    requests + 1 <= self._max_requests
-                    and tokens + estimated_tokens <= self._max_tokens
+                # A single call can legitimately cost more than the whole
+                # per-minute token budget: ten passages of a long tender plus
+                # a generous max_tokens clears a 6000 TPM ceiling on its own.
+                # Such a call can never satisfy the ceiling, so demanding that
+                # it does waits forever — the window empties, the call still
+                # does not fit, and the loop sleeps another minute. It is
+                # admitted alone once the window is otherwise clear, and the
+                # 429 handling in the provider covers the overshoot.
+                oversized = estimated_tokens > self._max_tokens
+                within_tokens = tokens + estimated_tokens <= self._max_tokens
+                fits = requests + 1 <= self._max_requests and (
+                    within_tokens or (oversized and not self._events)
                 )
                 if fits:
+                    if oversized:
+                        logger.warning(
+                            "rate_limit_oversized_call",
+                            estimated_tokens=estimated_tokens,
+                            max_tokens_per_minute=self._max_tokens,
+                        )
                     self._events.append((now, estimated_tokens))
                     return
 

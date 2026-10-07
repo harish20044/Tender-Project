@@ -29,6 +29,10 @@ class FactItem(BaseModel):
     unit: str | None = None
     confidence: float = 0.0
     page: int | None = None
+    # [x0, y0, x1, y1] in PDF points: the region of `page` the quote was
+    # printed in, for the viewer's highlight overlay. Null where the quote
+    # could not be located, or where the chunk predates block geometry.
+    bbox: list[float] | None = None
     quote: str | None = None
 
 
@@ -90,6 +94,7 @@ async def extract(tender_id: str) -> ExtractResponse:
                 unit=f.unit,
                 confidence=f.confidence,
                 page=f.page,
+                bbox=f.bbox,
                 quote=f.quote,
             )
             for f in facts
@@ -111,6 +116,7 @@ def get_facts(tender_id: str) -> ExtractResponse:
                 unit=entry.get("unit"),
                 confidence=entry.get("confidence") or 0.0,
                 page=entry.get("page"),
+                bbox=entry.get("bbox"),
                 quote=entry.get("quote"),
             )
             for key, entry in facts.items()
@@ -164,6 +170,7 @@ def correct_fact(
             unit=row.unit,
             confidence=row.confidence,
             page=row.page,
+            bbox=row.bbox,
             quote=row.quote,
         )
 

@@ -43,6 +43,7 @@ class FactScore:
     expected_page: int | None = None
     actual_page: int | None = None
     confidence: float = 0.0
+    actual_bbox: list[float] | None = None
 
     @property
     def page_correct(self) -> bool | None:
@@ -55,6 +56,19 @@ class FactScore:
         if self.expected_page is None or self.verdict in (Verdict.MISSED, Verdict.UNSCORED):
             return None
         return self.actual_page == self.expected_page
+
+    @property
+    def has_region(self) -> bool | None:
+        """Whether the citation narrowed to a region, not just a page.
+
+        A box is not checked against an expected rectangle — annotating exact
+        coordinates by hand would measure the PDF renderer rather than the
+        pipeline. What is worth measuring is coverage: how often a correct
+        fact can be pointed at on the page at all.
+        """
+        if self.verdict in (Verdict.MISSED, Verdict.UNSCORED):
+            return None
+        return self.actual_bbox is not None and len(self.actual_bbox) == 4
 
 
 def normalise_text(value: object) -> str:
@@ -106,6 +120,7 @@ def score_fact(
     expected_pages: dict[str, int],
     actual_page: int | None = None,
     confidence: float = 0.0,
+    actual_bbox: list[float] | None = None,
 ) -> FactScore:
     expected = expected_facts.get(key)
     spec = FACTS_BY_KEY.get(key)
@@ -127,6 +142,7 @@ def score_fact(
         expected_page=expected_pages.get(key),
         actual_page=actual_page,
         confidence=confidence,
+        actual_bbox=actual_bbox,
     )
 
 
@@ -183,3 +199,11 @@ class ExtractionReport:
     @property
     def pages_judged(self) -> int:
         return sum(1 for s in self.scores if s.page_correct is not None)
+
+    @property
+    def region_coverage(self) -> float:
+        """Share of found facts that carry a bounding box, not just a page."""
+        judged = [s for s in self.scores if s.has_region is not None]
+        if not judged:
+            return 0.0
+        return sum(1 for s in judged if s.has_region) / len(judged)
