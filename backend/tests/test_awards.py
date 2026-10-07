@@ -166,3 +166,60 @@ class TestAwardedDate:
 
     def test_none_when_neither_is_stated(self) -> None:
         assert awarded_date_of(AwardRecord(reference="X/1")) is None
+
+
+class TestDeadSessionSharing:
+    """The award scraper and the downloader must agree on what a crash is.
+
+    They drive the same portals through long page-load sequences, and Chrome
+    dies every few loads on some machines. A scraper that misses a crash
+    spends its whole CAPTCHA budget against a dead browser and reports every
+    remaining record as a content failure — the most misleading way for a
+    batch to end.
+    """
+
+    def test_the_real_chrome_crash_message_is_recognised(self) -> None:
+        from app.corpus.browser import session_is_dead
+
+        message = (
+            "invalid session id: session deleted as the browser has closed the connection\n"
+            "from disconnected: not connected to DevTools\n"
+            "(Session info: chrome=155.0.8059.40)"
+        )
+        assert session_is_dead(Exception(message))
+
+    def test_a_closed_window_counts_as_dead(self) -> None:
+        from app.corpus.browser import session_is_dead
+
+        assert session_is_dead(Exception("no such window: target window already closed"))
+
+    def test_an_ordinary_failure_does_not(self) -> None:
+        from app.corpus.browser import session_is_dead
+
+        assert not session_is_dead(Exception("element click intercepted"))
+        assert not session_is_dead(TimeoutError("timed out waiting for element"))
+
+    def test_both_scrapers_use_the_same_check(self) -> None:
+        # The downloader delegates rather than keeping its own copy, so the
+        # two cannot drift apart as new crash phrasings turn up.
+        from app.corpus.browser import session_is_dead
+        from app.corpus.documents import TenderDocumentDownloader
+
+        message = "chrome not reachable"
+        assert TenderDocumentDownloader._session_is_dead(Exception(message)) is True
+        assert session_is_dead(Exception(message)) is True
+
+
+class TestRestartBudget:
+    def test_the_budget_is_bounded(self) -> None:
+        # A browser that dies instantly and forever is a broken environment.
+        # Retrying without limit would hide that behind a run that never ends.
+        from app.corpus.awards import AwardScraper
+
+        scraper = AwardScraper(max_session_restarts=0)
+        assert scraper.restart() is False
+
+    def test_a_negative_budget_is_clamped(self) -> None:
+        from app.corpus.awards import AwardScraper
+
+        assert AwardScraper(max_session_restarts=-5)._max_session_restarts == 0

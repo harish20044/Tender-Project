@@ -29,6 +29,7 @@ search CAPTCHA is paid once per page rather than once per record.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -36,6 +37,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from app.core.logging import get_logger
+from app.corpus.browser import session_is_dead
 
 logger = get_logger(__name__)
 
@@ -235,11 +237,17 @@ class AwardScraper:
         captcha_attempts: int = 25,
         page_timeout: float = 60.0,
         settle_seconds: float = 4.0,
+        max_session_restarts: int = 6,
     ) -> None:
         self._headless = headless
         self._captcha_attempts = captcha_attempts
         self._page_timeout = page_timeout
         self._settle = settle_seconds
+        # Chrome dies every few page loads on some machines. A batch pays a
+        # CAPTCHA per record, so it crosses that threshold routinely and a
+        # run with no restart budget stops early with no explanation.
+        self._max_session_restarts = max(0, max_session_restarts)
+        self._restarts_used = 0
         self._driver: Any = None
 
     def __enter__(self) -> AwardScraper:
@@ -256,6 +264,25 @@ class AwardScraper:
             except Exception as exc:  # pragma: no cover - teardown only
                 logger.warning("award_driver_quit_failed", error=str(exc))
             self._driver = None
+
+    def restart(self) -> bool:
+        """Replace a dead browser, if the restart budget allows it.
+
+        Bounded rather than unlimited: a browser that dies immediately and
+        repeatedly is a broken environment, and retrying forever would hide
+        that behind a run that never finishes.
+        """
+        if self._restarts_used >= self._max_session_restarts:
+            logger.warning("award_restart_budget_spent", used=self._restarts_used)
+            return False
+        self._restarts_used += 1
+        logger.warning("award_browser_restarting", attempt=self._restarts_used)
+        if self._driver is not None:
+            with contextlib.suppress(Exception):
+                self._driver.quit()
+            self._driver = None
+        self._driver = self._build_driver()
+        return True
 
     def _build_driver(self) -> Any:
         from selenium import webdriver
@@ -368,6 +395,10 @@ class AwardScraper:
                     attempt=attempt,
                     error=f"{type(exc).__name__}: {str(exc)[:120]}",
                 )
+                # Every further attempt against a dead browser fails the same
+                # way, so retrying without replacing it just spends the budget.
+                if session_is_dead(exc) and not self.restart():
+                    break
 
         logger.warning("award_search_captcha_exhausted", attempts=self._captcha_attempts)
         return []
@@ -459,6 +490,7 @@ class AwardScraper:
         records: list[AwardRecord] = []
 
         for link in links[:limit]:
+            crashed = False
             try:
                 # Opened from the results page, so the browser sends it the
                 # way a click would.
@@ -489,15 +521,40 @@ class AwardScraper:
                 if record is not None:
                     records.append(record)
             except Exception as exc:
-                logger.warning("award_detail_failed", url=link[:90], error=str(exc))
+                logger.warning("award_detail_failed", url=link[:90], error=str(exc)[:160])
+                if session_is_dead(exc):
+                    # The results tab died with the browser, so every
+                    # remaining link is unreachable: replace the browser and
+                    # search again for whatever is still owed.
+                    crashed = True
+                    if not self.restart():
+                        break
+                    remaining = limit - len(records)
+                    if remaining > 0:
+                        records.extend(
+                            self.harvest(
+                                year=year,
+                                organisation=organisation,
+                                keyword=keyword,
+                                limit=remaining,
+                            )
+                        )
+                    break
             finally:
                 # Close every tab but the results tab, whatever happened, so
                 # one bad record cannot leave the browser somewhere unknown.
-                for handle in list(self._driver.window_handles):
-                    if handle != results_tab:
-                        self._driver.switch_to.window(handle)
-                        self._driver.close()
-                self._driver.switch_to.window(results_tab)
+                #
+                # Skipped after a crash: the handles belong to the browser
+                # that died, and the replacement has never seen them. Guarded
+                # regardless, because this runs in a finally and a throw here
+                # would replace the real error with one about window handles.
+                if not crashed:
+                    with contextlib.suppress(Exception):
+                        for handle in list(self._driver.window_handles):
+                            if handle != results_tab:
+                                self._driver.switch_to.window(handle)
+                                self._driver.close()
+                        self._driver.switch_to.window(results_tab)
 
         logger.info("award_harvest_done", found=len(links), read=len(records))
         return records

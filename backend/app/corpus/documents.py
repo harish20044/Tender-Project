@@ -28,7 +28,6 @@ from typing import Any, Literal
 
 from selenium import webdriver
 from selenium.common.exceptions import (
-    InvalidSessionIdException,
     NoAlertPresentException,
     TimeoutException,
     WebDriverException,
@@ -39,6 +38,7 @@ from selenium.webdriver.support import expected_conditions as conditions
 from selenium.webdriver.support.ui import WebDriverWait
 
 from app.core.logging import get_logger
+from app.corpus.browser import session_is_dead
 from app.corpus.captcha import is_plausible, solve
 from app.corpus.cppp import LISTINGS, ScrapedTender, _page_url
 
@@ -328,23 +328,10 @@ class TenderDocumentDownloader:
     def _session_is_dead(exc: BaseException) -> bool:
         """Whether an exception means the browser itself has gone.
 
-        Chrome does die mid-run — an auto-update swapping the binary under a
-        live session is the usual cause, and a long CAPTCHA sequence is
-        exactly the kind of workload that outlives one. Once it has, every
-        subsequent call fails identically, so a batch that does not notice
-        reports every remaining tender as a download failure.
+        Delegates to the shared check in ``app.corpus.browser`` so the
+        downloader and the award scraper recognise the same conditions.
         """
-        text = str(exc).lower()
-        return isinstance(exc, InvalidSessionIdException) or any(
-            marker in text
-            for marker in (
-                "invalid session id",
-                "browser has closed the connection",
-                "not connected to devtools",
-                "chrome not reachable",
-                "disconnected",
-            )
-        )
+        return session_is_dead(exc)
 
     def _restart_driver(self) -> None:
         """Replace a dead browser with a fresh one."""
