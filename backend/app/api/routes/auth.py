@@ -59,6 +59,27 @@ def _supabase() -> tuple[str, str]:
     return settings.supabase_url.rstrip("/"), settings.supabase_service_role_key
 
 
+class AuthConfig(BaseModel):
+    auth_required: bool
+    sign_in_available: bool
+
+
+@router.get("/config", response_model=AuthConfig)
+def config() -> AuthConfig:
+    """What the interface needs to know before anyone has signed in.
+
+    The interface should not carry its own opinion about whether sign-in is
+    mandatory — two copies of that setting would eventually disagree, and the
+    one that matters is the server's. Deliberately unauthenticated: it is
+    asked precisely when there is no token.
+    """
+    settings = get_settings()
+    return AuthConfig(
+        auth_required=settings.auth_required,
+        sign_in_available=bool(settings.supabase_url and settings.supabase_service_role_key),
+    )
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(credentials: LoginRequest, request: Request) -> LoginResponse:
     """Exchange an email and password for an access token."""

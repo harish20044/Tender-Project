@@ -1,4 +1,8 @@
+import { useMutation } from "@tanstack/react-query";
 import { NavLink } from "react-router-dom";
+
+import { useSession } from "../hooks/useSession";
+import { signOut } from "../lib/api";
 
 /**
  * Navigation, grouped by the stage of work rather than alphabetically.
@@ -28,6 +32,50 @@ const SECTIONS = [
     items: [{ to: "/decision", label: "Decision Report", hint: "Scorecard and rationale" }],
   },
 ] as const;
+
+/** Who is signed in, and the way out.
+ *
+ * Absent a session this says so rather than disappearing: when sign-in is
+ * optional, "nobody is signed in" explains why work is not being attributed
+ * to anyone, which an empty corner would not.
+ */
+function SessionPanel() {
+  const session = useSession();
+  const out = useMutation({ mutationFn: signOut });
+
+  if (!session) {
+    return (
+      <div className="border-t border-rule px-5 py-3">
+        <p className="label">Session</p>
+        <p className="mt-1 text-xs text-ink-faint">
+          Not signed in. Work is not attributed to anyone.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t border-rule px-5 py-3">
+      <p className="label">Signed in</p>
+      <p className="mt-1 truncate text-xs text-ink" title={session.user.email}>
+        {session.user.email}
+      </p>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <span className="rounded bg-rule px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ink-muted">
+          {session.user.role}
+        </span>
+        <button
+          type="button"
+          disabled={out.isPending}
+          onClick={() => out.mutate()}
+          className="text-xs text-accent underline-offset-2 hover:underline disabled:opacity-40"
+        >
+          {out.isPending ? "Signing out…" : "Sign out"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function Sidebar() {
   return (
@@ -79,12 +127,7 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="border-t border-rule px-5 py-3">
-        <p className="label">Status</p>
-        <p className="mt-1 text-xs text-ink-faint">
-          Every screen runs against the live API.
-        </p>
-      </div>
+      <SessionPanel />
     </aside>
   );
 }

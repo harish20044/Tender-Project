@@ -189,6 +189,35 @@ Application code is bind-mounted, so editing a file under `backend/` or
 docker compose up -d --build
 ```
 
+### Accounts and roles
+
+Set `AUTH_REQUIRED=true` and every route needs a Supabase access token; the
+interface shows a sign-in screen and attaches the token itself. Left false,
+requests without a token are served anonymously — but a token that *is*
+presented is always verified and its role always enforced, so this loosens
+who may call, never what a caller is trusted to be.
+
+Accounts live in Supabase. The role is read from `app_metadata`, which only
+the service-role key can write — `user_metadata` is editable by the user it
+belongs to, so a role kept there would let any account promote itself.
+
+```bash
+# Create a user with a role
+curl -X POST "$SUPABASE_URL/auth/v1/admin/users"   -H "apikey: $SUPABASE_SERVICE_ROLE_KEY"   -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"   -H "Content-Type: application/json"   -d '{"email":"someone@example.com","password":"...","email_confirm":true,
+       "app_metadata":{"role":"estimator"}}'
+
+# Change someone's role later
+curl -X PUT "$SUPABASE_URL/auth/v1/admin/users/<USER_ID>"   -H "apikey: $SUPABASE_SERVICE_ROLE_KEY"   -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"   -H "Content-Type: application/json"   -d '{"app_metadata":{"role":"manager"}}'
+```
+
+Roles, least to most: `viewer` reads and asks questions; `estimator` also
+uploads, runs the FAQs, extracts and scores; `manager` the same; `admin`
+everything, and is admitted to every route without being listed on it.
+
+A role change takes effect on the user's next request — the local `users`
+row is a cache of the claim, refreshed each time a token is verified, not a
+second source of truth.
+
 ### On a network that inspects TLS
 
 Corporate networks commonly terminate TLS at a proxy and re-sign every

@@ -3,10 +3,11 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth, decisions, documents, similarity, tenders
+from app.core.auth import enforce_auth
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.tls import install_system_trust
@@ -46,6 +47,10 @@ def create_app() -> FastAPI:
         ),
         version="0.1.0",
         lifespan=lifespan,
+        # Applied to the whole application rather than route by route, so a
+        # route added later is protected without anyone remembering to protect
+        # it. The failure mode of per-route opt-in is a forgotten route.
+        dependencies=[Depends(enforce_auth)],
     )
 
     app.add_middleware(

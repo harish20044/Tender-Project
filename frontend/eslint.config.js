@@ -28,6 +28,12 @@ const BROWSER_GLOBALS = {
   FormData: "readonly",
   HTMLElement: "readonly",
   HTMLInputElement: "readonly",
+  // The rest of the fetch API: `fetch` alone was enough until requests
+  // started carrying headers and their responses were handled in one place.
+  Headers: "readonly",
+  HeadersInit: "readonly",
+  Request: "readonly",
+  Response: "readonly",
 };
 
 const NODE_GLOBALS = {

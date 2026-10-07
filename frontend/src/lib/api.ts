@@ -1,6 +1,44 @@
 /** Client for the tender API. */
 
+import type { Session, SessionUser } from "./session";
+import { getToken, setSession } from "./session";
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+
+/** Attaches the session token when there is one.
+ *
+ * Absent a token the request still goes out: the API serves anonymously
+ * unless AUTH_REQUIRED is on, and a 401 is then handled below rather than
+ * being pre-empted here. That keeps one code path for both configurations.
+ */
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra);
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
+}
+
+/** Turns a failed response into an error worth reading.
+ *
+ * A 401 also drops the stored session: the token is either expired or no
+ * longer accepted, and keeping it would make every later call fail the same
+ * way with no sign of why.
+ */
+async function failure(response: Response): Promise<Error> {
+  if (response.status === 401) {
+    setSession(null);
+    return new Error("Your session has expired. Sign in again.");
+  }
+
+  let detail = `The API returned ${response.status}.`;
+  try {
+    const payload = (await response.json()) as { detail?: string };
+    if (payload.detail) detail = payload.detail;
+  } catch {
+    // Body was not JSON; the status line is all there is to report.
+  }
+  return new Error(detail);
+}
 
 export interface Tender {
   reference: string;
@@ -32,14 +70,8 @@ export interface CategoryCount {
 }
 
 async function request<T>(path: string): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`);
-
-  if (!response.ok) {
-    throw new Error(
-      `The API returned ${response.status}. Check that it is running on port 8001.`,
-    );
-  }
-
+  const response = await fetch(`${BASE_URL}${path}`, { headers: authHeaders() });
+  if (!response.ok) throw await failure(response);
   return (await response.json()) as T;
 }
 
@@ -163,19 +195,12 @@ export interface DecisionResult {
 }
 
 async function post<T>(path: string, body?: FormData): Promise<T> {
-  const response = await fetch(`${BASE_URL}${path}`, { method: "POST", body });
-
-  if (!response.ok) {
-    let detail = `The API returned ${response.status}.`;
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      if (payload.detail) detail = payload.detail;
-    } catch {
-      // Body was not JSON; the status line is all we have to report.
-    }
-    throw new Error(detail);
-  }
-
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    body,
+    headers: authHeaders(),
+  });
+  if (!response.ok) throw await failure(response);
   return (await response.json()) as T;
 }
 
@@ -272,20 +297,75 @@ export function correctFact(
 async function patchJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await failure(response);
+  return (await response.json()) as T;
+}
+
+// --- Sessions ---------------------------------------------------------------
+
+export interface LoginResult {
+  access_token: string;
+  expires_in: number;
+  user: SessionUser;
+}
+
+export async function signIn(email: string, password: string): Promise<Session> {
+  const response = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
   });
 
   if (!response.ok) {
-    let detail = `The API returned ${response.status}.`;
+    // Not routed through `failure`: a rejected sign-in is not an expired
+    // session, and clearing storage here would be meaningless.
+    let detail = "Sign-in failed.";
     try {
       const payload = (await response.json()) as { detail?: string };
       if (payload.detail) detail = payload.detail;
     } catch {
-      // Not JSON; the status is all there is.
+      // Keep the generic message.
     }
     throw new Error(detail);
   }
 
-  return (await response.json()) as T;
+  const result = (await response.json()) as LoginResult;
+  const session: Session = {
+    token: result.access_token,
+    user: result.user,
+    // A minute of headroom, so a token is not sent in the instant it lapses.
+    expiresAt: Date.now() + Math.max(0, result.expires_in - 60) * 1000,
+  };
+  setSession(session);
+  return session;
+}
+
+export async function signOut(): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/api/auth/logout`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+  } catch {
+    // The token is stateless, so the server has nothing to revoke; this call
+    // only marks the end of a session in the activity trail. Failing to
+    // reach it must not keep someone signed in locally.
+  }
+  setSession(null);
+}
+
+export function fetchMe(): Promise<SessionUser> {
+  return request<SessionUser>("/api/auth/me");
+}
+
+export interface AuthConfig {
+  auth_required: boolean;
+  sign_in_available: boolean;
+}
+
+export function fetchAuthConfig(): Promise<AuthConfig> {
+  return request<AuthConfig>("/api/auth/config");
 }

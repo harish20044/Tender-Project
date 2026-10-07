@@ -35,7 +35,7 @@ Every extracted fact carries the page and bounding box it came from, so any numb
 | Queue | Celery + Redis | A 500-page tender cannot be parsed inside an HTTP request |
 | Object storage | Supabase Storage (S3-compatible) | Source PDFs |
 | API | FastAPI + Pydantic, Alembic | |
-| Auth | Supabase Auth | Schema and roles exist; JWT verification is not wired up yet |
+| Auth | Supabase Auth | ES256 tokens verified against the project's published keys; roles read from server-written app_metadata |
 | Frontend | React, TypeScript, Vite, Tailwind | |
 
 The AI layer is entirely hosted, so tender text leaves the machine. That is a deliberate trade-off given no local GPU. All model calls sit behind a provider interface, so a self-hosted mode can be added later without touching calling code.
@@ -151,13 +151,12 @@ All four objectives run end to end against the live stack.
 | Fact extraction | Working. 22 decision-relevant figures with the page and sentence each came from. |
 | Bid / No-Bid decision | Working. Nine gates, deterministic, with a risk register and counterfactuals. |
 | Comparison against past tenders | Working. Scope similarity, reissue detection and structural matches, over a corpus seeded from real scraped tenders. |
-| Workspace screen | Specification only. |
+| Workspace screen | Working. Findings beside their source sentence, correctable in place. |
+| Sign-in and roles | Working. Tokens verified against Supabase's public keys; every route protected by default. |
 
 ### What is honestly not done
 
 **Document packs are not downloaded from the portal.** CPPP publishes notices but does not host the files: past its CAPTCHA the detail page links out to whichever portal the issuing department runs, and those links are bound to the browser session that produced them. The chain is implemented as far as the department portal, and the CAPTCHA reader passes the gate, but the final fetch is not reliable. Documents are uploaded by hand in the meantime, which is how an estimator works anyway — they already have the pack.
-
-**Authentication is schema only.** `users`, roles and the activity tables exist and are migrated, but nothing verifies a Supabase JWT or enforces a role yet.
 
 **The historical corpus is listing-level.** It is seeded from real scraped notices, so it carries titles, authorities, categories and dates, but not awarded values or bidder counts — those only exist after award. Comparison works on scope and wording rather than on outcomes.
 

@@ -242,6 +242,45 @@ def require(*roles: models.UserRole) -> Any:
     return Depends(guard)
 
 
+# Reachable without a token, whatever AUTH_REQUIRED says. Everything else is
+# protected by default, so a route added later is covered without anyone
+# having to remember to cover it — the failure mode of per-route opt-in is a
+# forgotten route, and the forgotten one is always the interesting one.
+PUBLIC_PATHS = frozenset(
+    {
+        "/health",
+        "/api/auth/config",
+        "/api/auth/login",
+        # FastAPI's own documentation surface.
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    }
+)
+
+
+def enforce_auth(request: Request) -> None:
+    """Gate every request that is not explicitly public.
+
+    Applied once, to the whole application, rather than route by route.
+    Roles are still checked per route by `require`; this only settles whether
+    an anonymous caller gets through the door at all.
+    """
+    if not get_settings().auth_required:
+        return
+    # A CORS preflight carries no credentials by design and must not be
+    # answered with a 401, or the real request is never sent.
+    if request.method == "OPTIONS":
+        return
+    if request.url.path in PUBLIC_PATHS:
+        return
+
+    token = _bearer(request)
+    if not token:
+        raise AuthError("This endpoint needs a Supabase access token.")
+    verify_token(token)
+
+
 def record_activity(
     user: Principal | None,
     action: models.ActivityAction,
