@@ -95,13 +95,21 @@ def _page_for(
     """
     if not quote:
         return None, None, None, None
-    for passage in passages:
-        page = passage.page_of(quote)
-        if page is not None:
+
+    # Two passes, and the order is the point. An exact run of the quote in
+    # any passage beats a loose, elision-tolerant hit in a higher-ranked one:
+    # the window "of not less than Rs." occurs in both a net-worth clause and
+    # an insurance clause pages apart, so searching passage by passage with
+    # elision allowed attributed a fact to whichever passage ranked first.
+    for allow_elided in (False, True):
+        for passage in passages:
+            page = passage.page_of(quote, allow_elided=allow_elided)
+            if page is None:
+                continue
             # The page the quote sits on, not the first page of the passage's
-            # range — a passage carrying a page break would otherwise cite the
-            # wrong page for everything after it.
-            region = passage.region_of(quote)
+            # range — a passage carrying a page break would otherwise cite
+            # the wrong page for everything after it.
+            region = passage.region_of(quote, allow_elided=allow_elided)
             if region is None:
                 return page, passage.chunk_id, None, None
             return page, passage.chunk_id, region.bbox, region.relative

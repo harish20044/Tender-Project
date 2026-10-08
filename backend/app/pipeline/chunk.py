@@ -39,7 +39,26 @@ _CHARS_PER_TOKEN = 4
 _PAGE_BREAK_MIN_FILL = 0.35
 
 
-def span_of(quote: str, text: str) -> tuple[int, int]:
+# Word counts tried as a leading anchor, longest first. A long run is close to
+# unambiguous; a short one still pins a page and a block.
+_ANCHOR_LENGTHS = (12, 9, 6, 4)
+
+# Never match on fewer words than this. Three words of tender boilerplate
+# ("of the Contract") appear on every page, and a match that loose would
+# attribute a fact to an arbitrary one.
+_MIN_ANCHOR_WORDS = 4
+
+
+def _find_run(words: list[str], text: str) -> tuple[int, int] | None:
+    """Locate a run of words in ``text``, treating whitespace as elastic."""
+    if not words:
+        return None
+    pattern = re.compile(r"\s+".join(re.escape(word) for word in words), re.IGNORECASE)
+    match = pattern.search(text)
+    return (match.start(), match.end()) if match else None
+
+
+def span_of(quote: str, text: str, *, allow_elided: bool = True) -> tuple[int, int]:
     """Where ``quote`` starts and ends in ``text``, or (-1, -1).
 
     Matched against the raw text with whitespace treated as elastic, rather
@@ -48,18 +67,57 @@ def span_of(quote: str, text: str) -> tuple[int, int]:
     that normalising removes, and the resulting drift is enough to put an
     offset on the wrong side of a page boundary.
 
-    Only the first twelve words are matched, which is long enough to be
-    unambiguous and short enough to survive the model paraphrasing the tail
-    of a long quote. The end returned is therefore the end of the matched
-    prefix, not of the whole quote — good enough to pick out which blocks a
-    citation covers, which is all it is used for.
+    Three strategies, in order of how much they prove.
+
+    A leading run of twelve words is close to unambiguous, so it is tried
+    first, then shorter leading runs for a quote whose tail the model
+    paraphrased.
+
+    Failing that, a window slides through the quote. This is the case that
+    matters in practice: asked for the clause that names the arbitration
+    seat, a model will quote "Dispute Resolution: Unresolved disputes shall
+    be settled by arbitration ... seated at New Delhi" — joining the heading
+    to a later sentence and dropping the one between. No leading run of that
+    exists anywhere in the document, and before this the fact fell back to
+    the page the model *claimed*, which was wrong, and lost its region.
+
+    The sliding window is a weaker claim than a leading run and can collide:
+    the window "of not less than Rs." appears both in a net-worth clause and
+    in an insurance clause pages away. So callers that search several
+    passages must try every passage strictly first and only then allow
+    elision — ``allow_elided=False`` gives them that pass. Otherwise a loose
+    hit in a higher-ranked passage beats the exact text in a lower one.
+
+    The end returned is the end of the matched run, not of the whole quote,
+    which is all that picking out a page and a block needs.
     """
-    words = quote.split()[:12]
+    words = quote.split()
     if not words:
         return -1, -1
-    pattern = re.compile(r"\s+".join(re.escape(word) for word in words), re.IGNORECASE)
-    match = pattern.search(text)
-    return (match.start(), match.end()) if match else (-1, -1)
+
+    for length in _ANCHOR_LENGTHS:
+        if len(words) < length:
+            continue
+        found = _find_run(words[:length], text)
+        if found:
+            return found
+
+    # A quote shorter than the minimum anchor is matched whole or not at all.
+    if len(words) < _MIN_ANCHOR_WORDS:
+        return _find_run(words, text) or (-1, -1)
+
+    if not allow_elided:
+        return -1, -1
+
+    # Slide a short window through the rest of the quote, so an elision
+    # anywhere in it still leaves something locatable.
+    window = _MIN_ANCHOR_WORDS + 1
+    for start in range(1, len(words) - window + 1):
+        found = _find_run(words[start : start + window], text)
+        if found:
+            return found
+
+    return -1, -1
 
 
 def offset_of(quote: str, text: str) -> int:
@@ -175,14 +233,14 @@ class Chunk:
                 break
         return page
 
-    def page_of(self, quote: str) -> int | None:
+    def page_of(self, quote: str, *, allow_elided: bool = True) -> int | None:
         """Which page a quote came from, or None if it is not in this chunk."""
         if not quote:
             return None
-        offset = offset_of(quote, self.content)
+        offset = span_of(quote, self.content, allow_elided=allow_elided)[0]
         return self.page_at(offset) if offset >= 0 else None
 
-    def region_of(self, quote: str) -> Region | None:
+    def region_of(self, quote: str, *, allow_elided: bool = True) -> Region | None:
         """Where on the page a quote was printed, or None.
 
         Restricted to blocks on the page the quote *starts* on. A quote
@@ -192,7 +250,7 @@ class Chunk:
         """
         if not quote or not self.blocks:
             return None
-        start, end = span_of(quote, self.content)
+        start, end = span_of(quote, self.content, allow_elided=allow_elided)
         if start < 0:
             return None
         page = self.page_at(start)

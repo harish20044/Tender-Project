@@ -255,3 +255,127 @@ class TestRegionGeometry:
 
     def test_a_quote_not_in_the_chunk_has_no_region(self) -> None:
         assert self._region("this sentence appears in no tender anywhere") is None
+
+
+class TestElidedQuoteMatching:
+    """A model quoting non-contiguously must still be locatable.
+
+    Asked for the clause naming the arbitration seat, the model returned
+    "Dispute Resolution: Unresolved disputes shall be settled by arbitration
+    ... seated at New Delhi" — joining the heading to a later sentence and
+    dropping the one between. No leading run of that exists in the document,
+    so the match failed, the fact fell back to the page the model *claimed*
+    (wrong), and it lost its region entirely. This is ordinary LLM quoting
+    behaviour, so the matcher has to survive it.
+    """
+
+    SOURCE = (
+        "Dispute Resolution: Disputes shall first be referred to the Dispute Resolution\n"
+        "Board. Unresolved disputes shall be settled by arbitration under the\n"
+        "Arbitration and Conciliation Act, 1996, seated at New Delhi."
+    )
+
+    def test_an_elided_quote_is_located(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        quote = (
+            "Dispute Resolution: Unresolved disputes shall be settled by arbitration "
+            "under the Arbitration and Conciliation Act, 1996, seated at New Delhi."
+        )
+        start, end = span_of(quote, self.SOURCE)
+        assert start >= 0, "an elided quote must still pin to the source"
+        # It must land on the surviving sentence, not on the heading it was
+        # spliced onto — landing on the heading would cite the wrong clause.
+        assert "Unresolved disputes" in self.SOURCE[start:end]
+
+    def test_an_exact_quote_still_matches_from_the_front(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        quote = "Disputes shall first be referred to the Dispute Resolution Board."
+        start, _ = span_of(quote, self.SOURCE)
+        assert self.SOURCE[start:].startswith("Disputes shall first")
+
+    def test_a_paraphrased_tail_matches_on_the_leading_run(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        quote = "Unresolved disputes shall be settled by arbitration under something else entirely"
+        start, _ = span_of(quote, self.SOURCE)
+        assert start >= 0
+
+    def test_text_that_is_absent_still_returns_not_found(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        # The loosened matching must not start finding things that are not
+        # there — that would attribute facts to arbitrary pages.
+        assert span_of("liquidated damages for delay shall be levied", self.SOURCE) == (-1, -1)
+
+    def test_a_too_short_quote_is_not_matched_loosely(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        # Two words of boilerplate appear everywhere; matching on them would
+        # be worse than reporting nothing.
+        assert span_of("shall be", self.SOURCE)[0] >= 0  # present verbatim
+        assert span_of("utterly absent", self.SOURCE) == (-1, -1)
+
+    def test_empty_quote_is_not_found(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        assert span_of("", self.SOURCE) == (-1, -1)
+        assert span_of("   ", self.SOURCE) == (-1, -1)
+
+
+class TestStrictBeforeLoose:
+    """An exact match must outrank an elision-tolerant one.
+
+    The sliding window is a weaker claim and it collides: "of not less than
+    Rs." appears both in a net-worth clause and in an insurance clause pages
+    apart. Searching passage by passage with elision allowed attributed the
+    net-worth figure to whichever passage happened to rank first, which is
+    how fixing one citation broke another.
+    """
+
+    NET_WORTH = (
+        "(b) The Bidder shall have a positive Net Worth of not less than\n"
+        "Rs. 28,45,00,000 as at the close of the preceding financial year."
+    )
+    INSURANCE = "Third Party Liability insurance of not less than Rs. 5,00,00,000 per occurrence."
+
+    QUOTE = (
+        "The Bidder shall have a positive Net Worth of not less than "
+        "Rs. 28,45,00,000 as at the close of the preceding financial year."
+    )
+
+    def test_strict_mode_refuses_the_colliding_window(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        # The insurance clause shares only a short window with the quote, so
+        # strict matching must find nothing in it.
+        assert span_of(self.QUOTE, self.INSURANCE, allow_elided=False) == (-1, -1)
+
+    def test_loose_mode_would_have_matched_it(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        # This is the collision the two-phase search exists to avoid: on its
+        # own, loose matching does hit the wrong clause.
+        assert span_of(self.QUOTE, self.INSURANCE, allow_elided=True)[0] >= 0
+
+    def test_strict_mode_still_finds_the_real_clause(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        assert span_of(self.QUOTE, self.NET_WORTH, allow_elided=False)[0] >= 0
+
+    def test_strict_mode_rejects_an_elided_quote(self) -> None:
+        from app.pipeline.chunk import span_of
+
+        source = (
+            "Dispute Resolution: Disputes shall first be referred to the Board. "
+            "Unresolved disputes shall be settled by arbitration seated at New Delhi."
+        )
+        elided = (
+            "Dispute Resolution: Unresolved disputes shall be settled by "
+            "arbitration seated at New Delhi."
+        )
+        # Strict finds nothing, which is what sends the search to its second
+        # pass rather than guessing.
+        assert span_of(elided, source, allow_elided=False) == (-1, -1)
+        assert span_of(elided, source, allow_elided=True)[0] >= 0

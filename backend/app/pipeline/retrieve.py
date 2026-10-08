@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.db import models
 from app.db.session import session_scope
-from app.pipeline.chunk import Region, offset_of, span_of, union_bbox
+from app.pipeline.chunk import Region, span_of, union_bbox
 from app.providers.base import EmbeddingProvider, RerankProvider
 
 logger = get_logger(__name__)
@@ -63,7 +63,7 @@ class Passage:
                 break
         return page
 
-    def page_of(self, quote: str) -> int | None:
+    def page_of(self, quote: str, *, allow_elided: bool = True) -> int | None:
         """The page a quote sits on, or None when it is not in this passage.
 
         This is what turns a range like "pp. 3-4" into the page an estimator
@@ -71,7 +71,7 @@ class Passage:
         """
         if not quote:
             return None
-        offset = offset_of(quote, self.content)
+        offset = span_of(quote, self.content, allow_elided=allow_elided)[0]
         return self.page_at(offset) if offset >= 0 else None
 
     def cite_for(self, quote: str | None) -> str:
@@ -79,7 +79,7 @@ class Passage:
         page = self.page_of(quote) if quote else None
         return f"{self.filename} p.{page}" if page else self.citation
 
-    def region_of(self, quote: str) -> Region | None:
+    def region_of(self, quote: str, *, allow_elided: bool = True) -> Region | None:
         """Where on the page a quote was printed, or None.
 
         Narrows a citation from a page to a rectangle. Restricted to blocks
@@ -92,7 +92,7 @@ class Passage:
         """
         if not quote or not self.block_spans:
             return None
-        start, end = span_of(quote, self.content)
+        start, end = span_of(quote, self.content, allow_elided=allow_elided)
         if start < 0:
             return None
         page = self.page_at(start)
